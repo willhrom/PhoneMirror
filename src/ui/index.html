@@ -106,6 +106,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px;
 .sw input:checked+span{background:linear-gradient(135deg,var(--accent),var(--accent2))}
 .sw input:checked+span::after{left:21px;background:#fff}
 .seg{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;background:var(--bg);border:1px solid var(--line);border-radius:11px;padding:4px;margin:10px 0 12px}
+.seg3{grid-template-columns:repeat(3,1fr);margin-top:0}
 .seg button{border:0;background:transparent;border-radius:8px;padding:7px 0;color:var(--muted);font-size:12.5px}
 .seg button.on{background:var(--s3);color:var(--text);box-shadow:0 1px 0 #ffffff10 inset}
 .looks{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 12px}
@@ -218,6 +219,10 @@ table.sc td:last-child{text-align:right}
           <button class="look" data-look="Silver"><span class="sw2" style="background:#d6d8dd;border-color:#a0a3aa"></span>Silver</button>
           <button class="look" data-look="Blue"><span class="sw2" style="background:#263a64;border-color:#5470a8"></span>Blue</button>
           <button class="look" data-look="Off"><span class="sw2" style="background:transparent;border-style:dashed;border-radius:3px"></span>Plain</button>
+        </div>
+        <div class="row" style="cursor:default"><div><div class="t">Phone buttons</div><div class="d">Back, home, volume beside the phone</div></div></div>
+        <div class="seg seg3" id="strip">
+          <button data-strip="hover">On hover</button><button data-strip="always">Always</button><button data-strip="off">Off</button>
         </div>
       </div>
       <div class="card">
@@ -406,6 +411,8 @@ function render(){
   document.querySelectorAll('input[data-key]').forEach(i => i.checked = !!S.settings[i.dataset.key]);
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', +b.dataset.size === S.settings.maxSize));
   document.querySelectorAll('.look').forEach(b => b.classList.toggle('on', b.dataset.look === S.settings.frameStyle));
+  document.querySelectorAll('#strip button').forEach(b => b.classList.toggle('on', b.dataset.strip === S.settings.buttonStrip));
+  $('strip').style.opacity = S.settings.frameStyle === 'Off' ? .4 : 1;
 
   // busy
   $('busy').classList.toggle('hidden', !S.busy);
@@ -415,6 +422,7 @@ function render(){
 document.querySelectorAll('input[data-key]').forEach(i => i.addEventListener('change', () => post('setting', {key: i.dataset.key, value: i.checked})));
 document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => post('setting', {key:'maxSize', value: +b.dataset.size})));
 document.querySelectorAll('.look').forEach(b => b.addEventListener('click', () => post('setting', {key:'frameStyle', value: b.dataset.look})));
+document.querySelectorAll('#strip button').forEach(b => b.addEventListener('click', () => post('setting', {key:'buttonStrip', value: b.dataset.strip})));
 
 function addLog(m){
   const el = document.createElement('div');
@@ -478,7 +486,7 @@ if (wv) { wv.addEventListener('message', e => handle(e.data)); post('ready'); }
 else {
   // Preview data (when opened outside the app)
   handle({type:'state', version:'1.0.5', engine:{ready:true}, update:null, busy:null,
-    settings:{autoMirror:true,autoWifi:true,startWithWindows:false,audio:true,screenOff:false,stayAwake:true,alwaysOnTop:false,fullscreen:false,record:false,maxSize:-1,frameStyle:'Black',lastIp:'192.168.1.20'},
+    settings:{autoMirror:true,autoWifi:true,startWithWindows:false,audio:true,screenOff:false,stayAwake:true,alwaysOnTop:false,fullscreen:false,record:false,maxSize:-1,frameStyle:'Black',buttonStrip:'hover',lastIp:'192.168.1.20'},
     devices: location.hash === '#empty' ? [] : [
       {serial:'abc',model:'Pixel 8',connection:'USB',state:'device',ready:true,mirroring:true},
       {serial:'192.168.1.20:5555',model:'Pixel 8',connection:'Wi-Fi',state:'device',ready:true,mirroring:false},

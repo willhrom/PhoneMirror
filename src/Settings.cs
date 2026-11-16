@@ -15,6 +15,8 @@ class Settings
     public bool Record { get; set; }
     /// <summary>Phone look: Black, Silver, Blue, or Off (plain window).</summary>
     public string FrameStyle { get; set; } = "Black";
+    /// <summary>Phone buttons beside the frame: hover, always, or off.</summary>
+    public string ButtonStrip { get; set; } = "hover";
     public bool AutoMirror { get; set; } = true;
     public bool AutoWifi { get; set; } = true;
     public bool StartWithWindows { get; set; }

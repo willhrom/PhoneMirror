@@ -297,6 +297,7 @@ public class MainForm : Form
             case "record": cfg.Record = B(); break;
             case "maxSize": cfg.MaxSize = value.GetInt32(); break;
             case "frameStyle": cfg.FrameStyle = value.GetString() ?? "Black"; break;
+            case "buttonStrip": cfg.ButtonStrip = value.GetString() ?? "hover"; break;
         }
         cfg.Save();
         PushState();
@@ -628,7 +629,7 @@ public class MainForm : Form
             Log($"Opening {d.Model} ({d.Connection})…{(rec != null ? " recording." : "")}");
             if (framed)
             {
-                frame = new PhoneFrameForm(p, d, cfg.FrameStyle, cfg.AlwaysOnTop)
+                frame = new PhoneFrameForm(p, d, cfg.FrameStyle, cfg.AlwaysOnTop, cfg.ButtonStrip)
                 {
                     ScreenshotRequested = dev => Screenshot(dev),
                     Log = msg => Log(msg, "warn"),

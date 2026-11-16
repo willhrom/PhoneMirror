@@ -11,7 +11,7 @@ namespace PhoneMirror;
 /// </summary>
 class PhoneFrameForm : Form
 {
-    const int Gap = 12, BarW = 42, BtnH = 34;
+    const int Gap = 10, BarW = 36, BtnH = 30;
 
     readonly Process proc;
     readonly Device device;
@@ -35,7 +35,7 @@ class PhoneFrameForm : Form
     int PhoneH => screenSize.Height + 2 * Bezel;
     Rectangle ScreenRect => new(Bezel, Bezel, screenSize.Width, screenSize.Height);
 
-    public PhoneFrameForm(Process proc, Device device, string style, bool topMost)
+    public PhoneFrameForm(Process proc, Device device, string style, bool topMost, string stripMode = "hover")
     {
         this.proc = proc;
         this.device = device;
@@ -57,51 +57,96 @@ class PhoneFrameForm : Form
         TopMost = topMost;
         ShowInTaskbar = true;
 
-        bar.BackColor = Color.FromArgb(30, 32, 38);
-        var buttons = new (string Glyph, string Tip, Action Act)[]
+        // Slim pill in the phone's own color, grouped: window · phone keys · navigation
+        this.stripMode = stripMode;
+        bool light = style == "Silver";
+        bar.BackColor = style switch
+        {
+            "Silver" => Color.FromArgb(226, 228, 232),
+            "Blue" => Color.FromArgb(32, 50, 88),
+            _ => Color.FromArgb(26, 26, 30),
+        };
+        iconColor = light ? Color.FromArgb(60, 64, 72) : Color.FromArgb(200, 205, 215);
+        var hover = light ? Color.FromArgb(206, 209, 215) : ControlPaint.Light(bar.BackColor, 0.35f);
+        var buttons = new (string Glyph, string Tip, Action? Act)[]
         {
             ("", "Close", () => Close()),
             ("", "Minimize", () => WindowState = FormWindowState.Minimized),
             ("", "Keep on top", TogglePin),
+            ("", "", null),
             ("", "Screenshot", () => { _ = ScreenshotRequested?.Invoke(device); }),
             ("", "Power / lock", () => Key(26)),
             ("", "Volume up", () => Key(24)),
             ("", "Volume down", () => Key(25)),
+            ("", "", null),
             ("", "Back", () => Key(4)),
             ("", "Home", () => Key(3)),
             ("", "Recent apps", () => Key(187)),
         };
         var tips = new ToolTip();
-        int y = 8;
+        int y = 10;
         Button? pin = null;
         foreach (var (glyph, tip, act) in buttons)
         {
+            if (act == null)
+            {
+                bar.Controls.Add(new Panel { BackColor = hover, Bounds = new Rectangle(10, y + 4, BarW - 20, 1) });
+                y += 10;
+                continue;
+            }
             var b = new Button
             {
                 Text = glyph,
-                Font = new Font("Segoe MDL2 Assets", 11f),
+                Font = new Font("Segoe MDL2 Assets", 9.5f),
                 FlatStyle = FlatStyle.Flat,
-                ForeColor = Color.FromArgb(220, 224, 232),
+                ForeColor = iconColor,
                 BackColor = bar.BackColor,
-                Bounds = new Rectangle(4, y, BarW - 8, BtnH - 2),
+                Bounds = new Rectangle(4, y, BarW - 8, BtnH - 4),
                 TabStop = false,
                 Cursor = Cursors.Hand,
             };
             b.FlatAppearance.BorderSize = 0;
-            b.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 60, 70);
+            b.FlatAppearance.MouseOverBackColor = hover;
+            b.FlatAppearance.MouseDownBackColor = hover;
             b.Click += (_, _) => { act(); FocusPhone(); };
             tips.SetToolTip(b, tip);
             bar.Controls.Add(b);
             if (tip == "Keep on top") pin = b;
             y += BtnH;
         }
-        bar.Height = y + 6;
+        bar.Height = y + 8;
         pinBtn = pin!;
         UpdatePin();
+        bar.Visible = stripMode == "always";
 
         Controls.Add(bar);
         watch.Tick += (_, _) => Watch();
         LocationChanged += (_, _) => PlaceChild();
+        hoverTimer.Tick += (_, _) => CheckHover();
+        if (stripMode == "hover") hoverTimer.Start();
+    }
+
+    readonly string stripMode;
+    readonly Color iconColor;
+    readonly System.Windows.Forms.Timer hoverTimer = new() { Interval = 120 };
+    DateTime lastInside = DateTime.MinValue;
+
+    /// <summary>Shows the button pill while the mouse is over the phone, hides it shortly after it leaves.</summary>
+    void CheckHover()
+    {
+        if (!Visible || WindowState == FormWindowState.Minimized) return;
+        var pos = Cursor.Position;
+        var phone = new Rectangle(Left, Top, PhoneW, PhoneH);
+        var pill = bar.Visible ? new Rectangle(PointToScreen(bar.Location), bar.Size) : Rectangle.Empty;
+        var bridge = bar.Visible ? new Rectangle(Left + PhoneW, pill.Top, Gap + 2, pill.Height) : Rectangle.Empty;
+        bool inside = phone.Contains(pos) || pill.Contains(pos) || bridge.Contains(pos);
+        if (inside) lastInside = DateTime.Now;
+        bool show = inside || (DateTime.Now - lastInside).TotalMilliseconds < 700;
+        if (show != bar.Visible)
+        {
+            bar.Visible = show;
+            ApplyLayout();
+        }
     }
 
     // ================= attaching =================
@@ -210,12 +255,14 @@ class PhoneFrameForm : Form
     void ApplyLayout()
     {
         bar.Bounds = new Rectangle(PhoneW + Gap, Math.Min(Math.Max(20, PhoneH / 8), Math.Max(0, ClientSize.Height - bar.Height)), BarW, bar.Height);
-        using (var bp = RoundRect(new Rectangle(0, 0, bar.Width, bar.Height), 12))
+        using (var bp = RoundRect(new Rectangle(0, 0, bar.Width, bar.Height), BarW / 2))
             bar.Region = new Region(bp);
 
         var region = new Region(RoundRect(new Rectangle(0, 0, PhoneW, PhoneH), OuterRadius));
         foreach (var nub in SideButtons()) region.Union(nub);
-        region.Union(bar.Bounds);
+        if (bar.Visible)
+            using (var pill = RoundRect(bar.Bounds, BarW / 2))
+                region.Union(pill);
         Region = region;
         PlaceChild();
         Invalidate();
@@ -326,7 +373,7 @@ class PhoneFrameForm : Form
         PlaceChild();
     }
 
-    void UpdatePin() => pinBtn.ForeColor = TopMost ? Theme.Accent : Color.FromArgb(220, 224, 232);
+    void UpdatePin() => pinBtn.ForeColor = TopMost ? Theme.Accent : iconColor;
 
     // ================= closing =================
 
@@ -334,6 +381,7 @@ class PhoneFrameForm : Form
     {
         processExited = true;
         watch.Stop();
+        hoverTimer.Stop();
         if (!IsDisposed) Close();
     }
 
@@ -351,6 +399,7 @@ class PhoneFrameForm : Form
             return;
         }
         watch.Stop();
+        hoverTimer.Stop();
         base.OnFormClosing(e);
     }
 
