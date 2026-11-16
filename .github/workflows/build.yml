@@ -1,0 +1,40 @@
+name: Build Phone Mirror
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build PhoneMirror.exe
+        run: dotnet publish src/PhoneMirror.csproj -c Release -o out -p:Version=1.0.${{ github.run_number }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhoneMirror
+          path: out/PhoneMirror.exe
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Phone Mirror 1.0.${{ github.run_number }}
+          make_latest: true
+          files: out/PhoneMirror.exe
+          body: |
+            Download **PhoneMirror.exe** below and double-click it. No install needed.
+
+            First launch downloads the mirroring engine (scrcpy) automatically.
+            If Windows SmartScreen warns you, click **More info → Run anyway** (the app isn't code-signed).
