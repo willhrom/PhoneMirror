@@ -13,6 +13,8 @@ class Settings
     public bool AlwaysOnTop { get; set; }
     public bool Fullscreen { get; set; }
     public bool Record { get; set; }
+    /// <summary>Phone look: Black, Silver, Blue, or Off (plain window).</summary>
+    public string FrameStyle { get; set; } = "Black";
     public bool AutoMirror { get; set; } = true;
     public bool AutoWifi { get; set; } = true;
     public bool StartWithWindows { get; set; }

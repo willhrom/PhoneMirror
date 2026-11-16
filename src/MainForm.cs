@@ -35,6 +35,11 @@ public class MainForm : Form
         ("1280 (smooth)", 1280), ("1024", 1024), ("800 (slow Wi-Fi)", 800),
     };
 
+    static readonly (string Label, string Value)[] Looks =
+    {
+        ("Phone — black", "Black"), ("Phone — silver", "Silver"), ("Phone — blue", "Blue"), ("Plain window", "Off"),
+    };
+
     public MainForm()
     {
         var v = Updater.Current;
@@ -181,6 +186,22 @@ public class MainForm : Form
         new ToolTip().SetToolTip(size, "Auto = sharp over USB, smooth and low-lag over Wi-Fi.");
         opts.Controls.Add(sizeLabel);
         opts.Controls.Add(size);
+        var lookLabel = new Label { Text = "Look:", AutoSize = true, Margin = new Padding(14, 6, 4, 0), ForeColor = Theme.Muted };
+        var look = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.Panel2,
+            ForeColor = Theme.Text,
+            Width = 150,
+            Margin = new Padding(0, 2, 0, 6),
+        };
+        foreach (var l in Looks) look.Items.Add(l.Label);
+        look.SelectedIndex = Math.Max(0, Array.FindIndex(Looks, l => l.Value == cfg.FrameStyle));
+        look.SelectedIndexChanged += (_, _) => { cfg.FrameStyle = Looks[look.SelectedIndex].Value; cfg.Save(); };
+        new ToolTip().SetToolTip(look, "Show the mirror inside a phone-shaped frame, or as a plain window.");
+        opts.Controls.Add(lookLabel);
+        opts.Controls.Add(look);
         Row(opts);
 
         // ---- tools ----
@@ -637,8 +658,19 @@ public class MainForm : Form
         if (cfg.StayAwake) args.Add("--stay-awake");
         if (cfg.ScreenOff) args.Add("--turn-screen-off");
         if (!cfg.Audio) args.Add("--no-audio");
-        if (cfg.AlwaysOnTop) args.Add("--always-on-top");
-        if (cfg.Fullscreen) args.Add("--fullscreen");
+        bool framed = cfg.FrameStyle != "Off" && !cfg.Fullscreen;
+        if (framed)
+        {
+            // borderless and off-screen until it's placed inside the phone frame
+            args.Add("--window-borderless");
+            args.Add("--window-x=-20000");
+            args.Add("--window-y=-20000");
+        }
+        else
+        {
+            if (cfg.AlwaysOnTop) args.Add("--always-on-top");
+            if (cfg.Fullscreen) args.Add("--fullscreen");
+        }
         string? rec = null;
         if (cfg.Record)
         {
@@ -660,6 +692,7 @@ public class MainForm : Form
 
         var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
         var started = DateTime.Now;
+        PhoneFrameForm? frame = null;
         void OnLine(string? line)
         {
             if (string.IsNullOrWhiteSpace(line)) return;
@@ -672,6 +705,7 @@ public class MainForm : Form
             mirrorsOpen--;
             int code = 0;
             try { code = p.ExitCode; } catch { }
+            frame?.ProcessExited();
             p.Dispose();
             if (rec != null && File.Exists(rec))
             {
@@ -697,9 +731,36 @@ public class MainForm : Form
             p.BeginErrorReadLine();
             mirrorsOpen++;
             Log($"Opening {d.Model} ({d.Connection})…{(rec != null ? " recording." : "")}");
+            if (framed)
+            {
+                frame = new PhoneFrameForm(p, d, cfg.FrameStyle, cfg.AlwaysOnTop) { ScreenshotRequested = dev => Screenshot(dev) };
+                _ = AttachFrame(frame, p);
+            }
         }
         catch (Exception ex) { Log("Couldn't launch the mirror: " + ex.Message); }
     }
+
+    async Task AttachFrame(PhoneFrameForm frame, Process p)
+    {
+        bool ok = false;
+        try { ok = await frame.AttachAsync(Screen.FromControl(this)); }
+        catch (Exception ex) { Log("Phone frame error: " + ex.Message); }
+        if (!ok)
+        {
+            frame.Dispose();
+            // fall back: bring the plain scrcpy window on screen
+            try
+            {
+                p.Refresh();
+                if (!p.HasExited && p.MainWindowHandle != IntPtr.Zero)
+                    MoveWindow(p.MainWindowHandle, 100, 60, 420, 860, true);
+            }
+            catch { }
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hgt, bool repaint);
 
     async Task Handoff(Device usb)
     {
@@ -870,9 +931,11 @@ public class MainForm : Form
 
     // ================= extras =================
 
-    async Task Screenshot()
+    Task Screenshot() => Screenshot(null);
+
+    async Task Screenshot(Device? target)
     {
-        var d = Selected;
+        var d = target ?? Selected;
         if (d is not { Ready: true }) { Log("Connect a phone first."); return; }
         Directory.CreateDirectory(ShotDir);
         var file = Path.Combine(ShotDir, $"{Safe(d.Model)} {DateTime.Now:yyyy-MM-dd HH-mm-ss}.png");

@@ -27,6 +27,7 @@ The first time it runs, it downloads the mirroring engine (scrcpy, ~10 MB) to `%
 - **Auto quality**: sharp over USB, low-lag over Wi-Fi
 - **Start with Windows**: runs quietly in the tray, so plugging in your phone just works
 - Offers to add itself to the Start menu and desktop, and **updates itself** from this repo's releases
+- **Looks like a phone**: the mirror sits inside a phone body (black, silver, or blue) with a button strip for power, volume, back, home, recents, screenshot and keep-on-top. Drag the bezel to move it, drag the bottom-right corner to resize it, and it rotates with your phone. Choose **Look: Plain window** for the classic window.
 - Mirror and control over **USB** or **Wi-Fi**
 - Phone audio on the laptop (Android 11+)
 - Turn the phone screen off while mirroring
