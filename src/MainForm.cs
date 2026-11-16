@@ -1,258 +1,61 @@
 using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
+using QRCoder;
 
 namespace PhoneMirror;
 
 public class MainForm : Form
 {
+    static readonly Color Bg = Color.FromArgb(11, 13, 18);
+    static readonly JsonSerializerOptions J = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    static readonly Regex AddrRx = new(@"\d+\.\d+\.\d+\.\d+:\d+");
+
     readonly Settings cfg = Settings.Load();
-    readonly ListView list = new();
-    readonly TextBox log = new();
-    readonly ProgressBar progress = new();
-    readonly Label status = new();
-    readonly Button mirrorBtn;
-    readonly FlowLayoutPanel updateBar;
-    readonly Label updateLabel = new();
+    readonly WebView2 web = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Bg };
     readonly NotifyIcon tray = new();
     readonly System.Windows.Forms.Timer poll = new() { Interval = 5000 };
-    readonly List<Control> needsEngine = new();
     readonly HashSet<string> wifiDone = new();
+    readonly HashSet<string> mirroring = new();
+    readonly List<(string Time, string Text, string Level)> logHistory = new();
 
     List<Device> devices = new();
     string deviceSignature = "";
-    bool refreshing, refreshAgain, engineReady, allowAuto, closing, reallyQuit;
+    bool uiReady, refreshing, refreshAgain, engineReady, allowAuto, closing, reallyQuit;
     int mirrorsOpen;
     DateTime lastReconnect = DateTime.MinValue;
-    string? updateUrl;
+    string? updateUrl, updateVersion, busyText;
+    int busyPct;
     Process? tracker;
+    CancellationTokenSource? qrCts;
 
     static string RecordDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Phone Mirror");
     static string ShotDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Phone Mirror");
 
-    static readonly (string Label, int Value)[] Sizes =
-    {
-        ("Auto (recommended)", -1), ("Full resolution", 0), ("1920 (sharp)", 1920), ("1600", 1600),
-        ("1280 (smooth)", 1280), ("1024", 1024), ("800 (slow Wi-Fi)", 800),
-    };
-
-    static readonly (string Label, string Value)[] Looks =
-    {
-        ("Phone — black", "Black"), ("Phone — silver", "Silver"), ("Phone — blue", "Blue"), ("Plain window", "Off"),
-    };
-
     public MainForm()
     {
         var v = Updater.Current;
-        Text = $"Phone Mirror {v.Major}.{v.Minor}.{v.Build}";
+        Text = "Phone Mirror";
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-        BackColor = Theme.Bg;
-        ForeColor = Theme.Text;
-        Font = new Font("Segoe UI", 9.5f);
+        BackColor = Bg;
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(660, 780);
-        MinimumSize = new Size(600, 660);
+        ClientSize = new Size(1060, 720);
+        MinimumSize = new Size(880, 600);
         StartPosition = FormStartPosition.CenterScreen;
         if (Program.Background) Opacity = 0;
+        Controls.Add(web);
 
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            Padding = new Padding(22, 16, 22, 14),
-            BackColor = Theme.Bg,
-        };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        void Row(Control c, SizeType type = SizeType.AutoSize, float h = 0)
-        {
-            root.RowStyles.Add(new RowStyle(type, h));
-            c.Dock = DockStyle.Fill;
-            root.Controls.Add(c);
-        }
-
-        // ---- header ----
-        var header = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Margin = new Padding(0) };
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        var titleBox = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, Margin = new Padding(0), WrapContents = false };
-        titleBox.Controls.Add(new Label { Text = "Phone Mirror", AutoSize = true, Font = new Font("Segoe UI Semibold", 20f), Margin = new Padding(0) });
-        titleBox.Controls.Add(new Label { Text = "Plug in your phone and it opens here automatically", AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(2, 0, 0, 0) });
-        var help = Theme.Button("Phone setup help");
-        help.Anchor = AnchorStyles.Right | AnchorStyles.Top;
-        help.Margin = new Padding(0, 10, 0, 0);
-        help.Click += (_, _) => ShowHelp();
-        header.Controls.Add(titleBox, 0, 0);
-        header.Controls.Add(help, 1, 0);
-        Row(header);
-
-        // ---- update banner (hidden until needed) ----
-        updateBar = new FlowLayoutPanel { AutoSize = true, BackColor = Color.FromArgb(30, 58, 110), Padding = new Padding(10, 6, 6, 0), Margin = new Padding(0, 10, 0, 0), Visible = false };
-        updateLabel.AutoSize = true;
-        updateLabel.ForeColor = Color.White;
-        updateLabel.Margin = new Padding(0, 6, 12, 0);
-        var updateBtn = Theme.Button("Update now");
-        updateBtn.BackColor = Theme.Accent;
-        updateBtn.Click += async (_, _) => await ApplyUpdate();
-        updateBar.Controls.Add(updateLabel);
-        updateBar.Controls.Add(updateBtn);
-        Row(updateBar);
-
-        // ---- phones ----
-        Row(Theme.Heading("Your phones"));
-        list.View = View.Details;
-        list.FullRowSelect = true;
-        list.MultiSelect = false;
-        list.HideSelection = false;
-        list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
-        list.BorderStyle = BorderStyle.None;
-        list.BackColor = Theme.Panel;
-        list.ForeColor = Theme.Text;
-        list.Font = new Font("Segoe UI", 10f);
-        list.OwnerDraw = true;
-        list.Columns.Add("Phone", 230);
-        list.Columns.Add("Connection", 100);
-        list.Columns.Add("Status", 200);
-        var headerFont = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-        list.DrawColumnHeader += (_, e) =>
-        {
-            using var bg = new SolidBrush(Theme.Panel2);
-            e.Graphics.FillRectangle(bg, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, e.Header?.Text, headerFont,
-                new Rectangle(e.Bounds.X + 6, e.Bounds.Y, e.Bounds.Width - 6, e.Bounds.Height), Theme.Muted,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
-        };
-        list.DrawItem += (_, e) => e.DrawDefault = true;
-        list.DrawSubItem += (_, e) => e.DrawDefault = true;
-        list.Resize += (_, _) => FitColumns();
-        list.DoubleClick += (_, _) => StartMirror();
-        list.SelectedIndexChanged += (_, _) => UpdateButtons();
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Start mirroring", null, (_, _) => StartMirror());
-        menu.Items.Add("Take screenshot", null, async (_, _) => await Screenshot());
-        menu.Items.Add("Enable Wi-Fi for this phone", null, async (_, _) => await ManualEnableWifi());
-        menu.Items.Add("Disconnect (Wi-Fi)", null, async (_, _) => await Disconnect());
-        list.ContextMenuStrip = menu;
-        Row(list, SizeType.Absolute, 130);
-
-        var connectRow = Flow();
-        connectRow.Margin = new Padding(0, 10, 0, 0);
-        var qrBtn = Theme.Button("Add phone wirelessly (QR code)");
-        qrBtn.Click += async (_, _) => await PairQr();
-        var ipBtn = Theme.Button("Connect by IP…");
-        ipBtn.Click += async (_, _) => await ConnectWifi();
-        connectRow.Controls.AddRange(new Control[] { qrBtn, ipBtn });
-        needsEngine.AddRange(new Control[] { qrBtn, ipBtn });
-        Row(connectRow);
-
-        // ---- big button ----
-        mirrorBtn = Theme.Button("▶   Start Mirroring", accent: true);
-        mirrorBtn.Margin = new Padding(0, 6, 0, 4);
-        mirrorBtn.Click += (_, _) => StartMirror();
-        Row(mirrorBtn, SizeType.Absolute, 62);
-
-        // ---- automatic ----
-        Row(Theme.Heading("Automatic"));
-        var auto = Flow();
-        auto.Controls.Add(Check("Open when phone is plugged in", cfg.AutoMirror, x => cfg.AutoMirror = x,
-            "Start mirroring as soon as you plug in your phone."));
-        auto.Controls.Add(Check("Go wireless when unplugged", cfg.AutoWifi, x => cfg.AutoWifi = x,
-            "When you plug in, Phone Mirror also turns on Wi-Fi mode. Unplug and the mirror keeps going over Wi-Fi."));
-        auto.Controls.Add(Check("Start with Windows", cfg.StartWithWindows, x => { cfg.StartWithWindows = x; Installer.SetStartWithWindows(x); },
-            "Run quietly in the system tray so plugging in your phone just works."));
-        Row(auto);
-
-        // ---- options ----
-        Row(Theme.Heading("Mirror options"));
-        var opts = Flow();
-        opts.Controls.Add(Check("Turn phone screen off", cfg.ScreenOff, x => cfg.ScreenOff = x,
-            "The phone's display goes dark to save battery, but it keeps working here."));
-        opts.Controls.Add(Check("Phone audio", cfg.Audio, x => cfg.Audio = x, "Play the phone's sound on the laptop (Android 11+)."));
-        opts.Controls.Add(Check("Keep phone awake", cfg.StayAwake, x => cfg.StayAwake = x, "Stop the phone from sleeping while plugged in."));
-        opts.Controls.Add(Check("Always on top", cfg.AlwaysOnTop, x => cfg.AlwaysOnTop = x, "Keep the phone window above other windows."));
-        opts.Controls.Add(Check("Full screen", cfg.Fullscreen, x => cfg.Fullscreen = x, "Open the mirror full screen (Alt+F toggles)."));
-        opts.Controls.Add(Check("Record to video", cfg.Record, x => cfg.Record = x, "Save an .mp4 to Videos\\Phone Mirror."));
-        var sizeLabel = new Label { Text = "Quality:", AutoSize = true, Margin = new Padding(0, 6, 4, 0), ForeColor = Theme.Muted };
-        var size = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Theme.Panel2,
-            ForeColor = Theme.Text,
-            Width = 170,
-            Margin = new Padding(0, 2, 0, 6),
-        };
-        foreach (var s in Sizes) size.Items.Add(s.Label);
-        size.SelectedIndex = Math.Max(0, Array.FindIndex(Sizes, s => s.Value == cfg.MaxSize));
-        size.SelectedIndexChanged += (_, _) => { cfg.MaxSize = Sizes[size.SelectedIndex].Value; cfg.Save(); };
-        new ToolTip().SetToolTip(size, "Auto = sharp over USB, smooth and low-lag over Wi-Fi.");
-        opts.Controls.Add(sizeLabel);
-        opts.Controls.Add(size);
-        var lookLabel = new Label { Text = "Look:", AutoSize = true, Margin = new Padding(14, 6, 4, 0), ForeColor = Theme.Muted };
-        var look = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Theme.Panel2,
-            ForeColor = Theme.Text,
-            Width = 150,
-            Margin = new Padding(0, 2, 0, 6),
-        };
-        foreach (var l in Looks) look.Items.Add(l.Label);
-        look.SelectedIndex = Math.Max(0, Array.FindIndex(Looks, l => l.Value == cfg.FrameStyle));
-        look.SelectedIndexChanged += (_, _) => { cfg.FrameStyle = Looks[look.SelectedIndex].Value; cfg.Save(); };
-        new ToolTip().SetToolTip(look, "Show the mirror inside a phone-shaped frame, or as a plain window.");
-        opts.Controls.Add(lookLabel);
-        opts.Controls.Add(look);
-        Row(opts);
-
-        // ---- tools ----
-        var toolsRow = Flow();
-        toolsRow.Margin = new Padding(0, 8, 0, 0);
-        var shotBtn = Theme.Button("Screenshot");
-        shotBtn.Click += async (_, _) => await Screenshot();
-        var recBtn = Theme.Button("Open recordings");
-        recBtn.Click += (_, _) => OpenFolder(RecordDir);
-        var picBtn = Theme.Button("Open screenshots");
-        picBtn.Click += (_, _) => OpenFolder(ShotDir);
-        var updBtn = Theme.Button("Update engine");
-        updBtn.Click += async (_, _) => await UpdateEngine();
-        toolsRow.Controls.AddRange(new Control[] { shotBtn, recBtn, picBtn, updBtn });
-        needsEngine.Add(shotBtn);
-        Row(toolsRow);
-
-        // ---- activity log ----
-        Row(Theme.Heading("Activity"));
-        log.Multiline = true;
-        log.ReadOnly = true;
-        log.ScrollBars = ScrollBars.Vertical;
-        log.BackColor = Theme.Panel;
-        log.ForeColor = Theme.Muted;
-        log.BorderStyle = BorderStyle.None;
-        log.Font = new Font("Consolas", 9f);
-        Row(log, SizeType.Percent, 100);
-
-        // ---- status bar ----
-        var bar = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
-        bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
-        status.AutoSize = true;
-        status.ForeColor = Theme.Muted;
-        status.Margin = new Padding(0, 3, 0, 0);
-        progress.Dock = DockStyle.Fill;
-        progress.Visible = false;
-        progress.Height = 14;
-        bar.Controls.Add(status, 0, 0);
-        bar.Controls.Add(progress, 1, 0);
-        Row(bar);
-
-        Controls.Add(root);
-
-        // ---- tray icon ----
         tray.Icon = Icon;
         tray.Text = "Phone Mirror";
         tray.Visible = true;
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Open Phone Mirror", null, (_, _) => ShowWindow());
-        trayMenu.Items.Add("Mirror my phone", null, (_, _) => StartMirror());
+        trayMenu.Items.Add("Mirror my phone", null, (_, _) => StartMirror(null));
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("Quit", null, (_, _) => { reallyQuit = true; Close(); });
         tray.ContextMenuStrip = trayMenu;
@@ -262,10 +65,21 @@ public class MainForm : Form
             ThreadPool.RegisterWaitForSingleObject(Program.ShowSignal, (_, _) => Ui(ShowWindow), null, -1, false);
 
         poll.Tick += async (_, _) => { await RefreshDevices(); await ReconnectWifi(); };
-        foreach (var c in needsEngine) c.Enabled = false;
-        mirrorBtn.Enabled = false;
-        ShowPlaceholder("Getting things ready…");
     }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        try
+        {
+            int on = 1, caption = 0x00120D0B; // BGR of the app background
+            DwmSetWindowAttribute(Handle, 20, ref on, 4);       // dark title bar
+            DwmSetWindowAttribute(Handle, 35, ref caption, 4);  // title bar color (Windows 11)
+        }
+        catch { }
+    }
+
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int value, int size);
 
     // ================= startup / shutdown =================
 
@@ -274,39 +88,74 @@ public class MainForm : Form
         base.OnShown(e);
         if (Program.Background) { Hide(); Opacity = 1; }
         if (OfferInstall()) return;
-        if (cfg.StartWithWindows) Installer.SetStartWithWindows(true); // keep the path current
+        if (cfg.StartWithWindows) Installer.SetStartWithWindows(true);
+
+        if (!await InitWebView()) return;
 
         try
         {
             if (!Tools.Locate())
             {
-                Log("First run: downloading the mirroring engine (scrcpy, free & open source)…");
+                Log("First run: downloading the mirroring engine (scrcpy, free and open source)…");
                 await InstallEngine();
             }
             else Log($"Mirroring engine ready (scrcpy {Tools.InstalledVersion}).");
 
             await Tools.AdbAsync(15000, "start-server");
             engineReady = true;
-            foreach (var c in needsEngine) c.Enabled = true;
+            PushState();
 
             allowAuto = !Program.Background;
             await RefreshDevices();
             allowAuto = true;
             _ = Task.Run(TrackDevicesLoop);
             poll.Start();
-            if (devices.Count == 0) Log("Plug your phone in with a USB cable to begin. First time? Click \"Phone setup help\".");
+            if (devices.Count == 0) Log("Waiting for a phone. Plug it in with a USB cable.");
             _ = ReconnectWifi();
         }
         catch (Exception ex)
         {
-            Log("Setup failed: " + ex.Message);
-            Log("Check your internet connection, then click \"Update engine\".");
-            ShowPlaceholder("Mirroring engine not installed");
+            Log("Setup failed: " + ex.Message, "error");
+            Log("Check your internet connection, then click \"Update engine\" below.", "warn");
         }
         _ = CheckForUpdate();
     }
 
-    /// <summary>First run from Downloads: offer to add it to the Start menu and desktop.</summary>
+    async Task<bool> InitWebView()
+    {
+        try
+        {
+            var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Tools.AppDir, "WebView2"));
+            await web.EnsureCoreWebView2Async(env);
+            var core = web.CoreWebView2;
+            core.Settings.AreDevToolsEnabled = false;
+            core.Settings.AreDefaultContextMenusEnabled = false;
+            core.Settings.IsZoomControlEnabled = false;
+            core.Settings.IsStatusBarEnabled = false;
+            core.Settings.AreBrowserAcceleratorKeysEnabled = false;
+            core.WebMessageReceived += OnWebMessage;
+            core.NewWindowRequested += (_, a) => { a.Handled = true; OpenUrl(a.Uri); };
+            core.NavigationStarting += (_, a) =>
+            {
+                if (a.Uri.StartsWith("http", StringComparison.OrdinalIgnoreCase)) { a.Cancel = true; OpenUrl(a.Uri); }
+            };
+            using var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("ui.html")!;
+            using var reader = new StreamReader(s);
+            core.NavigateToString(await reader.ReadToEndAsync());
+            return true;
+        }
+        catch (WebView2RuntimeNotFoundException)
+        {
+            var r = MessageBox.Show(this,
+                "Phone Mirror needs the Microsoft Edge WebView2 Runtime, which is missing on this PC.\n\nOpen the download page now?",
+                "Phone Mirror", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (r == DialogResult.Yes) OpenUrl("https://go.microsoft.com/fwlink/p/?LinkId=2124703");
+            reallyQuit = true;
+            Close();
+            return false;
+        }
+    }
+
     bool OfferInstall()
     {
         if (Program.Background || Installer.IsInstalled || cfg.InstallAsked) return false;
@@ -326,7 +175,7 @@ public class MainForm : Form
         }
         catch (Exception ex)
         {
-            Log("Couldn't install: " + ex.Message);
+            Log("Couldn't install: " + ex.Message, "error");
             return false;
         }
     }
@@ -342,12 +191,13 @@ public class MainForm : Form
                 cfg.TrayTipShown = true;
                 cfg.Save();
                 tray.ShowBalloonTip(4000, "Phone Mirror is still running",
-                    "It's down here in the tray, ready for when you plug in your phone. Right-click › Quit to close it.", ToolTipIcon.Info);
+                    "It's in the tray, ready for when you plug in your phone. Right-click › Quit to close it.", ToolTipIcon.Info);
             }
             return;
         }
         closing = true;
         poll.Stop();
+        qrCts?.Cancel();
         try { tracker?.Kill(); } catch { }
         tray.Visible = false;
         base.OnFormClosing(e);
@@ -361,35 +211,120 @@ public class MainForm : Form
         BringToFront();
     }
 
+    // ================= UI bridge =================
+
+    void Post(object message)
+    {
+        if (!uiReady || closing || web.CoreWebView2 == null) return;
+        try { web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(message, J)); } catch { }
+    }
+
+    void PushState()
+    {
+        var v = Updater.Current;
+        Post(new
+        {
+            type = "state",
+            version = $"{v.Major}.{v.Minor}.{v.Build}",
+            engine = new { ready = engineReady, version = Tools.InstalledVersion },
+            devices = devices.Select(d => new
+            {
+                serial = d.Serial,
+                model = d.Model,
+                connection = d.Connection,
+                state = d.State,
+                ready = d.Ready,
+                mirroring = mirroring.Contains(d.Serial),
+            }),
+            settings = cfg,
+            update = updateVersion,
+            busy = busyText == null ? null : new { text = busyText, pct = busyPct },
+        });
+    }
+
+    void Toast(string text) => Post(new { type = "toast", text });
+
+    async void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(e.WebMessageAsJson);
+            var r = doc.RootElement;
+            string? Str(string k) => r.TryGetProperty(k, out var x) && x.ValueKind == JsonValueKind.String ? x.GetString() : null;
+            Device? Dev() { var sn = Str("serial"); return sn == null ? null : devices.FirstOrDefault(d => d.Serial == sn); }
+
+            switch (Str("cmd"))
+            {
+                case "ready":
+                    uiReady = true;
+                    Post(new { type = "logHistory", items = logHistory.Select(l => new { time = l.Time, text = l.Text, level = l.Level }) });
+                    PushState();
+                    break;
+                case "mirror": StartMirror(Dev()); break;
+                case "screenshot": await Screenshot(Dev()); break;
+                case "enableWifi": await ManualEnableWifi(Dev()); break;
+                case "disconnect": await Disconnect(Dev()); break;
+                case "setting": ApplySetting(Str("key") ?? "", r.GetProperty("value")); break;
+                case "connectIp": await ConnectIp(Str("ip") ?? ""); break;
+                case "pairCode": await PairWithCode(Str("addr") ?? "", Str("code") ?? ""); break;
+                case "qrStart": await StartQr(); break;
+                case "qrCancel": qrCts?.Cancel(); break;
+                case "openFolder": OpenFolder(Str("which") == "shots" ? ShotDir : RecordDir); break;
+                case "updateEngine": await UpdateEngine(); break;
+                case "applyUpdate": await ApplyUpdate(); break;
+                case "copyLog":
+                    Clipboard.SetText(string.Join("\r\n", logHistory.Select(l => $"{l.Time}  {l.Text}")) + "\r\n");
+                    Toast("Activity copied");
+                    break;
+            }
+        }
+        catch (Exception ex) { Log("Error: " + ex.Message, "error"); }
+    }
+
+    void ApplySetting(string key, JsonElement value)
+    {
+        bool B() => value.ValueKind == JsonValueKind.True;
+        switch (key)
+        {
+            case "autoMirror": cfg.AutoMirror = B(); break;
+            case "autoWifi": cfg.AutoWifi = B(); break;
+            case "startWithWindows": cfg.StartWithWindows = B(); Installer.SetStartWithWindows(cfg.StartWithWindows); break;
+            case "audio": cfg.Audio = B(); break;
+            case "screenOff": cfg.ScreenOff = B(); break;
+            case "stayAwake": cfg.StayAwake = B(); break;
+            case "alwaysOnTop": cfg.AlwaysOnTop = B(); break;
+            case "fullscreen": cfg.Fullscreen = B(); break;
+            case "record": cfg.Record = B(); break;
+            case "maxSize": cfg.MaxSize = value.GetInt32(); break;
+            case "frameStyle": cfg.FrameStyle = value.GetString() ?? "Black"; break;
+        }
+        cfg.Save();
+        PushState();
+    }
+
     // ================= engine =================
+
+    void SetBusy(string? text, int pct = 0)
+    {
+        busyText = text;
+        busyPct = pct;
+        PushState();
+    }
 
     async Task InstallEngine()
     {
-        progress.Visible = true;
-        progress.Value = 0;
         try
         {
-            var tag = await Tools.InstallAsync((msg, pct) =>
-            {
-                status.Text = msg;
-                progress.Value = Math.Clamp(pct, 0, 100);
-            });
-            Log($"Installed scrcpy {tag}.");
+            SetBusy("Downloading the mirroring engine…", 0);
+            var tag = await Tools.InstallAsync((msg, pct) => SetBusy(msg, pct));
+            Log($"Installed scrcpy {tag}.", "good");
         }
-        finally
-        {
-            progress.Visible = false;
-            status.Text = "";
-        }
+        finally { SetBusy(null); }
     }
 
     async Task UpdateEngine()
     {
-        if (mirrorsOpen > 0)
-        {
-            MessageBox.Show(this, "Close all phone windows before updating.", "Phone Mirror", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
+        if (mirrorsOpen > 0) { Toast("Close your phone windows first"); return; }
         poll.Stop();
         engineReady = false;
         try { tracker?.Kill(); } catch { }
@@ -399,10 +334,10 @@ public class MainForm : Form
             await InstallEngine();
             await Tools.AdbAsync(15000, "start-server");
             engineReady = true;
-            foreach (var c in needsEngine) c.Enabled = true;
             deviceSignature = "";
         }
-        catch (Exception ex) { Log("Update failed: " + ex.Message); }
+        catch (Exception ex) { Log("Update failed: " + ex.Message, "error"); }
+        PushState();
         await RefreshDevices();
         poll.Start();
     }
@@ -416,36 +351,31 @@ public class MainForm : Form
             var u = await Updater.CheckAsync();
             if (u == null) return;
             updateUrl = u.Value.Url;
-            updateLabel.Text = $"A new version of Phone Mirror is ready ({u.Value.Version.Major}.{u.Value.Version.Minor}.{u.Value.Version.Build}).";
-            updateBar.Visible = true;
+            updateVersion = $"{u.Value.Version.Major}.{u.Value.Version.Minor}.{u.Value.Version.Build}";
+            PushState();
         }
-        catch { /* offline: ignore */ }
+        catch { }
     }
 
     async Task ApplyUpdate()
     {
         if (updateUrl == null) return;
-        updateBar.Enabled = false;
-        progress.Visible = true;
         try
         {
             Log("Downloading update…");
-            await Updater.ApplyAsync(updateUrl, pct => { progress.Value = Math.Clamp(pct, 0, 100); status.Text = $"Downloading update… {pct}%"; });
+            await Updater.ApplyAsync(updateUrl, pct => SetBusy($"Updating Phone Mirror… {pct}%", pct));
             reallyQuit = true;
             Close();
         }
         catch (Exception ex)
         {
-            Log("Update failed: " + ex.Message);
-            updateBar.Enabled = true;
-            progress.Visible = false;
-            status.Text = "";
+            SetBusy(null);
+            Log("Update failed: " + ex.Message, "error");
         }
     }
 
     // ================= devices =================
 
-    /// <summary>Instant plug/unplug detection: adb streams an event whenever the device list changes.</summary>
     async Task TrackDevicesLoop()
     {
         while (!closing)
@@ -497,7 +427,7 @@ public class MainForm : Form
                 await RefreshOnce();
             } while (refreshAgain && !closing);
         }
-        catch (Exception ex) { Log("Couldn't check for phones: " + ex.Message); }
+        catch (Exception ex) { Log("Couldn't check for phones: " + ex.Message, "error"); }
         finally { refreshing = false; }
     }
 
@@ -511,72 +441,68 @@ public class MainForm : Form
         var newlyReady = now.Where(d => d.Ready && !prev.Any(o => o.Serial == d.Serial && o.Ready)).ToList();
         foreach (var d in now.Where(d => !prev.Any(o => o.Serial == d.Serial && o.State == d.State)))
         {
-            if (d.State == "unauthorized") Log($"{d.Model}: unlock the phone and tap \"Allow\" on the USB debugging prompt.");
-            else if (d.Ready) Log($"{d.Model} connected over {d.Connection}.");
+            if (d.State == "unauthorized") Log($"{d.Model}: unlock the phone and tap \"Allow\" on the USB debugging prompt.", "warn");
+            else if (d.Ready) Log($"{d.Model} connected over {d.Connection}.", "good");
+            else if (d.State == "offline") Log($"{d.Model} is offline. Try unplugging and plugging it back in.", "warn");
         }
         foreach (var d in prev.Where(o => !now.Any(n => n.Serial == o.Serial)))
             Log($"{d.Model} ({d.Connection}) disconnected.");
 
         deviceSignature = sig;
         devices = now;
-        RenderList();
+        PushState();
 
-        // Plugged in over USB → go wireless-ready, then open the mirror.
         var usb = newlyReady.FirstOrDefault(d => !d.Wireless);
         if (usb != null && allowAuto) await OnUsbPhoneArrived(usb);
     }
 
-    void RenderList()
-    {
-        var selected = Selected?.Serial;
-        list.BeginUpdate();
-        list.Items.Clear();
-        if (devices.Count == 0)
-        {
-            ShowPlaceholder("No phone connected — plug in with USB");
-        }
-        else
-        {
-            foreach (var d in devices)
-            {
-                var (text, color) = d.State switch
-                {
-                    "device" => ("Ready", Theme.Good),
-                    "unauthorized" => ("Tap \"Allow\" on your phone", Theme.Warn),
-                    "offline" => ("Offline — reconnect", Theme.Bad),
-                    _ => (d.State, Theme.Warn),
-                };
-                var item = new ListViewItem(d.Model) { Tag = d, UseItemStyleForSubItems = false, ForeColor = Theme.Text, BackColor = Theme.Panel };
-                item.SubItems.Add(d.Connection, Theme.Muted, Theme.Panel, list.Font);
-                item.SubItems.Add(text, color, Theme.Panel, list.Font);
-                list.Items.Add(item);
-            }
-            var items = list.Items.Cast<ListViewItem>().ToList();
-            var pick = items.FirstOrDefault(i => (i.Tag as Device)?.Serial == selected)
-                       ?? items.FirstOrDefault(i => i.Tag is Device { Ready: true, Wireless: false })
-                       ?? items.FirstOrDefault(i => (i.Tag as Device)?.Ready == true)
-                       ?? items[0];
-            pick.Selected = true;
-        }
-        list.EndUpdate();
-        FitColumns();
-        UpdateButtons();
-    }
-
     async Task OnUsbPhoneArrived(Device usb)
     {
+        bool wantMirror = cfg.AutoMirror && mirrorsOpen == 0;
+        if (wantMirror && !Visible) tray.ShowBalloonTip(2500, "Phone Mirror", $"Opening {usb.Model}…", ToolTipIcon.None);
+
         var target = usb;
         if (cfg.AutoWifi && !wifiDone.Contains(usb.Serial))
         {
-            wifiDone.Add(usb.Serial);
-            if (await EnableWifi(usb, quiet: true))
-                target = await WaitReady(usb.Serial) ?? usb;
+            // Turning on Wi-Fi mode briefly restarts the phone's debug connection,
+            // so it has to happen before the mirror opens (only once per phone restart).
+            bool alreadyOn = await WifiAlreadyOn(usb);
+            target = await PrepareWifiQuietly(usb, allowRestart: true) ?? usb;
+            if (!alreadyOn && target.Serial == usb.Serial) target = await WaitReady(usb.Serial) ?? target;
         }
-        if (cfg.AutoMirror && mirrorsOpen == 0)
+        if (wantMirror && mirrorsOpen == 0) StartMirror(target);
+    }
+
+    static async Task<bool> WifiAlreadyOn(Device usb)
+    {
+        var (_, port) = await Tools.AdbAsync(5000, "-s", usb.Serial, "shell", "getprop", "service.adb.tcp.port");
+        return port.Trim() == "5555";
+    }
+
+    /// <summary>Makes sure the phone can also be reached over Wi-Fi. Returns the device to mirror (USB if it came back).</summary>
+    async Task<Device?> PrepareWifiQuietly(Device usb, bool allowRestart)
+    {
+        wifiDone.Add(usb.Serial);
+        var ip = await PhoneWifiIp(usb.Serial);
+        if (ip == null) return null;
+        if (!await WifiAlreadyOn(usb))
         {
-            if (Program.Background && !Visible) tray.ShowBalloonTip(2500, "Phone Mirror", $"Opening {target.Model}…", ToolTipIcon.None);
-            StartMirror(target);
+            if (!allowRestart) return null;
+            Log($"Turning on Wi-Fi mode for {usb.Model}…");
+            await Tools.AdbAsync("-s", usb.Serial, "tcpip", "5555");
+            await Task.Delay(1800);
         }
+        var (_, o) = await Tools.AdbAsync(8000, "connect", $"{ip}:5555");
+        if (o.Contains("connected to"))
+        {
+            cfg.LastIp = ip;
+            cfg.Save();
+            Log($"Wi-Fi ready for {usb.Model} ({ip}). You can unplug anytime.", "good");
+        }
+        var back = await WaitReady(usb.Serial);
+        if (back != null) return back;
+        var all = await Tools.DevicesAsync();
+        return all.FirstOrDefault(x => x.Ready && x.Serial == $"{ip}:5555");
     }
 
     static async Task<Device?> WaitReady(string serial)
@@ -585,57 +511,25 @@ public class MainForm : Form
         {
             var d = (await Tools.DevicesAsync()).FirstOrDefault(x => x.Serial == serial && x.Ready);
             if (d != null) return d;
-            await Task.Delay(600);
+            await Task.Delay(500);
         }
         return null;
     }
 
-    void ShowPlaceholder(string message)
-    {
-        list.Items.Clear();
-        var item = new ListViewItem(message) { ForeColor = Theme.Muted, BackColor = Theme.Panel };
-        item.SubItems.Add("");
-        item.SubItems.Add("");
-        list.Items.Add(item);
-        UpdateButtons();
-    }
-
-    Device? Selected =>
-        list.SelectedItems.Count > 0 && list.SelectedItems[0].Tag is Device d
-            ? d
-            : devices.FirstOrDefault(x => x.Ready && !x.Wireless) ?? devices.FirstOrDefault(x => x.Ready);
-
-    void UpdateButtons()
-    {
-        var d = Selected;
-        mirrorBtn.Enabled = engineReady && d is { Ready: true };
-        mirrorBtn.BackColor = mirrorBtn.Enabled ? Theme.Accent : Theme.Panel2;
-        mirrorBtn.Text = d is { Ready: true } ? $"▶   Mirror {d.Model}" : "▶   Start Mirroring";
-    }
-
-    void FitColumns()
-    {
-        if (list.Columns.Count < 3) return;
-        var w = list.ClientSize.Width;
-        list.Columns[1].Width = 100;
-        list.Columns[2].Width = Math.Max(160, (int)(w * 0.36));
-        list.Columns[0].Width = Math.Max(120, w - list.Columns[1].Width - list.Columns[2].Width - 2);
-    }
+    Device? DefaultDevice => devices.FirstOrDefault(x => x.Ready && !x.Wireless) ?? devices.FirstOrDefault(x => x.Ready);
 
     // ================= mirroring =================
 
-    void StartMirror() => StartMirror(null);
-
     void StartMirror(Device? target)
     {
-        if (!engineReady || Tools.Scrcpy == null) return;
-        var d = target ?? Selected;
-        if (d == null) { Log("No phone connected yet. Plug it in with USB, or add it wirelessly."); return; }
+        if (!engineReady || Tools.Scrcpy == null) { Toast("Still getting ready…"); return; }
+        var d = target ?? DefaultDevice;
+        if (d == null) { Toast("Plug in your phone first"); return; }
         if (!d.Ready)
         {
             Log(d.State == "unauthorized"
                 ? "Unlock your phone and tap \"Allow\" on the USB debugging prompt first."
-                : "That phone is offline. Unplug and replug it (or reconnect Wi-Fi).");
+                : "That phone is offline. Unplug and replug it, or reconnect Wi-Fi.", "warn");
             return;
         }
 
@@ -643,7 +537,7 @@ public class MainForm : Form
         string bitrate = d.Wireless ? "6M" : "8M";
         if (size < 0)
         {
-            size = d.Wireless ? 1280 : 1920;   // Auto: lower over Wi-Fi = less lag
+            size = d.Wireless ? 1280 : 1920;
             bitrate = d.Wireless ? "4M" : "10M";
         }
 
@@ -659,18 +553,9 @@ public class MainForm : Form
         if (cfg.ScreenOff) args.Add("--turn-screen-off");
         if (!cfg.Audio) args.Add("--no-audio");
         bool framed = cfg.FrameStyle != "Off" && !cfg.Fullscreen;
-        if (framed)
-        {
-            // borderless and off-screen until it's placed inside the phone frame
-            args.Add("--window-borderless");
-            args.Add("--window-x=-20000");
-            args.Add("--window-y=-20000");
-        }
-        else
-        {
-            if (cfg.AlwaysOnTop) args.Add("--always-on-top");
-            if (cfg.Fullscreen) args.Add("--fullscreen");
-        }
+        if (framed) args.Add("--window-borderless");
+        if (cfg.AlwaysOnTop && !framed) args.Add("--always-on-top");
+        if (cfg.Fullscreen) args.Add("--fullscreen");
         string? rec = null;
         if (cfg.Record)
         {
@@ -692,34 +577,42 @@ public class MainForm : Form
 
         var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
         var started = DateTime.Now;
+        var output = new List<string>();
         PhoneFrameForm? frame = null;
         void OnLine(string? line)
         {
             if (string.IsNullOrWhiteSpace(line)) return;
-            if (line.Contains("ERROR") || line.Contains("WARN")) Ui(() => Log("  " + line.Trim()));
+            lock (output) { output.Add(line.Trim()); if (output.Count > 40) output.RemoveAt(0); }
+            if (line.Contains("ERROR")) Ui(() => Log("  " + line.Trim(), "error"));
         }
         p.OutputDataReceived += (_, e) => OnLine(e.Data);
         p.ErrorDataReceived += (_, e) => OnLine(e.Data);
         p.Exited += (_, _) => Ui(() =>
         {
             mirrorsOpen--;
+            mirroring.Remove(d.Serial);
             int code = 0;
             try { code = p.ExitCode; } catch { }
             frame?.ProcessExited();
             p.Dispose();
+            PushState();
             if (rec != null && File.Exists(rec))
             {
-                Log($"Recording saved: {rec}");
+                Log($"Recording saved: {rec}", "good");
                 try { Process.Start("explorer.exe", $"/select,\"{rec}\""); } catch { }
             }
             if (code == 2 && !d.Wireless && cfg.AutoWifi && !closing)
             {
-                _ = Handoff(d);   // cable pulled → continue over Wi-Fi
+                _ = Handoff(d);
             }
-            else if (code != 0 && (DateTime.Now - started).TotalSeconds < 15)
+            else if (code != 0 && (DateTime.Now - started).TotalSeconds < 20)
             {
-                Log($"Mirror for {d.Model} couldn't start.");
-                Log("  Tip: unlock the phone, check for an \"Allow\" prompt, or try a lower Quality setting.");
+                Log($"The mirror for {d.Model} couldn't start. Details:", "error");
+                List<string> last;
+                lock (output) last = output.Where(l => !l.StartsWith("INFO")).TakeLast(4).ToList();
+                if (last.Count == 0) lock (output) last = output.TakeLast(4).ToList();
+                foreach (var l in last) Log("  " + l, "error");
+                Log("Tip: unlock the phone and look for an \"Allow\" prompt, or try Quality › Light.", "warn");
             }
             else Log($"Closed mirror for {d.Model}.");
         });
@@ -730,41 +623,37 @@ public class MainForm : Form
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
             mirrorsOpen++;
+            mirroring.Add(d.Serial);
+            PushState();
             Log($"Opening {d.Model} ({d.Connection})…{(rec != null ? " recording." : "")}");
             if (framed)
             {
-                frame = new PhoneFrameForm(p, d, cfg.FrameStyle, cfg.AlwaysOnTop) { ScreenshotRequested = dev => Screenshot(dev) };
+                frame = new PhoneFrameForm(p, d, cfg.FrameStyle, cfg.AlwaysOnTop)
+                {
+                    ScreenshotRequested = dev => Screenshot(dev),
+                    Log = msg => Log(msg, "warn"),
+                };
                 _ = AttachFrame(frame, p);
             }
         }
-        catch (Exception ex) { Log("Couldn't launch the mirror: " + ex.Message); }
+        catch (Exception ex) { Log("Couldn't launch the mirror: " + ex.Message, "error"); }
     }
 
     async Task AttachFrame(PhoneFrameForm frame, Process p)
     {
         bool ok = false;
         try { ok = await frame.AttachAsync(Screen.FromControl(this)); }
-        catch (Exception ex) { Log("Phone frame error: " + ex.Message); }
+        catch (Exception ex) { Log("Phone frame problem: " + ex.Message, "warn"); }
         if (!ok)
         {
-            frame.Dispose();
-            // fall back: bring the plain scrcpy window on screen
-            try
-            {
-                p.Refresh();
-                if (!p.HasExited && p.MainWindowHandle != IntPtr.Zero)
-                    MoveWindow(p.MainWindowHandle, 100, 60, 420, 860, true);
-            }
-            catch { }
+            try { frame.Dispose(); } catch { }
+            if (!p.HasExited) Log("Showing the mirror in a plain window instead.", "warn");
         }
     }
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hgt, bool repaint);
-
     async Task Handoff(Device usb)
     {
-        Log($"{usb.Model} unplugged — switching to Wi-Fi…");
+        Log($"{usb.Model} unplugged. Switching to Wi-Fi…");
         for (int i = 0; i < 8 && !closing; i++)
         {
             await Task.Delay(1000);
@@ -777,54 +666,23 @@ public class MainForm : Form
             }
             if (i == 2 && cfg.LastIp != "") await Tools.AdbAsync(4000, "connect", WithPort(cfg.LastIp));
         }
-        Log("Couldn't switch to Wi-Fi. Is the phone on the same Wi-Fi as this laptop?");
+        Log("Couldn't switch to Wi-Fi. Is the phone on the same Wi-Fi as this laptop?", "warn");
     }
 
     // ================= Wi-Fi =================
 
-    async Task<bool> EnableWifi(Device usb, bool quiet)
+    async Task ManualEnableWifi(Device? d)
     {
-        var ip = await PhoneWifiIp(usb.Serial);
-        if (ip == null)
+        var usb = d is { Wireless: false, Ready: true } ? d : devices.FirstOrDefault(x => !x.Wireless && x.Ready);
+        if (usb == null) { Toast("Plug in your phone with USB first"); return; }
+        if (mirroring.Contains(usb.Serial) && !await WifiAlreadyOn(usb))
         {
-            if (!quiet) Log("Couldn't find the phone's Wi-Fi address. Is Wi-Fi turned on?");
-            return false;
-        }
-
-        bool restarted = false;
-        var (_, port) = await Tools.AdbAsync("-s", usb.Serial, "shell", "getprop", "service.adb.tcp.port");
-        if (port.Trim() != "5555")
-        {
-            await Tools.AdbAsync("-s", usb.Serial, "tcpip", "5555");
-            restarted = true;
-            await Task.Delay(2000);
-        }
-        var (_, o) = await Tools.AdbAsync(8000, "connect", $"{ip}:5555");
-        if (o.Contains("connected to"))
-        {
-            cfg.LastIp = ip;
-            cfg.Save();
-            Log($"Wi-Fi ready for {usb.Model} ({ip}) — you can unplug anytime.");
-            return restarted;
-        }
-        if (!quiet) Log("Wi-Fi connection failed: " + FirstLine(o));
-        return restarted;
-    }
-
-    async Task ManualEnableWifi()
-    {
-        var usb = Selected is { Wireless: false, Ready: true } s ? s : devices.FirstOrDefault(d => !d.Wireless && d.Ready);
-        if (usb == null)
-        {
-            MessageBox.Show(this,
-                "Plug your phone in with a USB cable first (and tap \"Allow\" on the phone).\n\n" +
-                "Both the phone and laptop need to be on the same Wi-Fi network.",
-                "Enable Wi-Fi", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            Toast("Close the phone window first. Turning on Wi-Fi briefly restarts the connection.");
             return;
         }
         Log($"Setting up Wi-Fi for {usb.Model}…");
-        wifiDone.Add(usb.Serial);
-        await EnableWifi(usb, quiet: false);
+        var r = await PrepareWifiQuietly(usb, allowRestart: true);
+        if (cfg.LastIp == "" || r == null) Log("Couldn't turn on Wi-Fi. Is the phone connected to Wi-Fi?", "warn");
         await RefreshDevices();
     }
 
@@ -842,7 +700,6 @@ public class MainForm : Form
         return null;
     }
 
-    /// <summary>Quietly re-attaches the last Wi-Fi phone when it's back on the network.</summary>
     async Task ReconnectWifi()
     {
         if (!engineReady || cfg.LastIp == "" || (DateTime.Now - lastReconnect).TotalSeconds < 15) return;
@@ -852,77 +709,151 @@ public class MainForm : Form
         if (o.Contains("connected to")) await RefreshDevices();
     }
 
-    async Task PairQr()
+    async Task ConnectIp(string input)
     {
-        using var f = new QrPairForm();
-        var r = f.ShowDialog(this);
-        if (r == DialogResult.Retry) { await PairWithCode(); return; }
-        if (r == DialogResult.OK)
-        {
-            Log("Phone added wirelessly.");
-            await RefreshDevices();
-            var d = devices.FirstOrDefault(x => x.Serial == f.ConnectedTo);
-            if (d != null && cfg.AutoMirror && mirrorsOpen == 0) StartMirror(d);
-        }
-    }
-
-    async Task ConnectWifi()
-    {
-        var res = Prompt.Show(this, "Connect by IP",
-            "Enter your phone's IP address (and port, if Wireless debugging shows one).\n" +
-            "Find it on the phone under Settings › About phone › Status, or on the Wireless debugging screen.",
-            ("Phone IP address", cfg.LastIp));
-        if (res == null || res[0] == "") return;
-        var target = WithPort(res[0]);
+        if (input == "") return;
+        var target = WithPort(input);
         Log($"Connecting to {target}…");
         var (_, o) = await Tools.AdbAsync(10000, "connect", target);
         if (o.Contains("connected to"))
         {
             if (target.EndsWith(":5555")) { cfg.LastIp = target[..^5]; cfg.Save(); }
-            Log("Connected.");
+            Log("Connected.", "good");
             await RefreshDevices();
         }
         else
         {
-            Log("Couldn't reach the phone: " + FirstLine(o));
-            Log("  Try \"Add phone wirelessly (QR code)\" instead, or plug in with USB once.");
+            Log("Couldn't reach the phone: " + FirstLine(o), "error");
+            Log("Try \"Scan QR code\" instead, or plug in with USB once.", "warn");
         }
     }
 
-    async Task PairWithCode()
-    {
-        var res = Prompt.Show(this, "Pair with a code (Android 11+)",
-            "On your phone: Settings › Developer options › Wireless debugging › turn ON.\n" +
-            "Tap \"Pair device with pairing code\" and type what it shows below.",
-            ("IP address & port shown in the popup (e.g. 192.168.1.20:37099)", ""),
-            ("Wi-Fi pairing code (6 digits)", ""));
-        if (res == null || res[0] == "" || res[1] == "") return;
+    // ================= wireless pairing =================
 
-        Log($"Pairing with {res[0]}…");
-        var (_, o) = await Tools.AdbAsync(20000, "pair", res[0], res[1]);
-        if (!o.Contains("Successfully", StringComparison.OrdinalIgnoreCase))
+    void QrStatus(string text, string level, bool done = false) => Post(new { type = "qrStatus", text, level, done });
+
+    async Task StartQr()
+    {
+        qrCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        qrCts = cts;
+        if (!engineReady) { QrStatus("Still getting ready. Try again in a moment.", "bad"); return; }
+
+        var name = "phonemirror-" + RandomNumberGenerator.GetHexString(6, true);
+        var pass = RandomNumberGenerator.GetString("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789", 10);
+        using (var gen = new QRCodeGenerator())
+        using (var data = gen.CreateQrCode($"WIFI:T:ADB;S:{name};P:{pass};;", QRCodeGenerator.ECCLevel.M))
         {
-            Log("Pairing failed: " + FirstLine(o));
-            Log("  Codes expire quickly — open a fresh pairing code and try again.");
+            var png = new PngByteQRCode(data).GetGraphic(8);
+            Post(new { type = "qr", image = "data:image/png;base64," + Convert.ToBase64String(png) });
+        }
+
+        try { await QrPairLoop(name, pass, cts.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { QrStatus("Something went wrong: " + ex.Message, "bad"); }
+    }
+
+    async Task QrPairLoop(string name, string pass, CancellationToken ct)
+    {
+        var deadline = DateTime.Now.AddMinutes(3);
+        string? pairAddr = null;
+        while (pairAddr == null)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (DateTime.Now > deadline)
+            {
+                QrStatus("Timed out. Check the phone and laptop are on the same Wi-Fi, then try again.", "bad");
+                return;
+            }
+            var found = await Mdns.BrowseAsync("_adb-tls-pairing._tcp.local", 1500, ct);
+            var hit = found.FirstOrDefault(f => f.Instance.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (hit != null) { pairAddr = hit.Endpoint; break; }
+
+            var (_, o) = await Tools.AdbAsync(4000, "mdns", "services");
+            foreach (var line in o.Split('\n'))
+                if (line.Contains(name) && line.Contains("_adb-tls-pairing"))
+                {
+                    var m = AddrRx.Match(line);
+                    if (m.Success) pairAddr = m.Value;
+                }
+        }
+
+        QrStatus("Phone found. Pairing…", "wait");
+        Log($"Pairing with {pairAddr}…");
+        var (_, r) = await Tools.AdbAsync(20000, "pair", pairAddr, pass);
+        ct.ThrowIfCancellationRequested();
+        if (!r.Contains("Successfully", StringComparison.OrdinalIgnoreCase))
+        {
+            QrStatus("Pairing failed: " + FirstLine(r), "bad");
+            Log("Pairing failed: " + FirstLine(r), "error");
             return;
         }
-        Log("Paired! Waiting for the phone to connect…");
-        var ip = res[0].Split(':')[0];
-        for (int i = 0; i < 10; i++)
+
+        QrStatus("Paired! Connecting…", "wait");
+        var d = await ConnectAfterPairing(pairAddr.Split(':')[0], ct);
+        if (d != null)
         {
-            await Task.Delay(1000);
-            var (_, s) = await Tools.AdbAsync(5000, "mdns", "services");
-            var m = s.Split('\n').Where(l => l.Contains("_adb-tls-connect") && l.Contains(ip + ":"))
-                     .Select(l => Regex.Match(l, @"\d+\.\d+\.\d+\.\d+:\d+")).FirstOrDefault(x => x.Success);
-            if (m != null) { await Tools.AdbAsync(8000, "connect", m.Value); break; }
+            QrStatus($"Connected to {d.Model}", "good", done: true);
+            Log($"{d.Model} added wirelessly.", "good");
+            if (cfg.AutoMirror && mirrorsOpen == 0) StartMirror(d);
         }
-        await RefreshDevices();
+        else
+        {
+            QrStatus("Paired, but couldn't connect. Use \"Connect by IP\" with the address on the Wireless debugging screen.", "bad");
+            Log("Paired, but couldn't connect automatically.", "warn");
+        }
     }
 
-    async Task Disconnect()
+    async Task PairWithCode(string addr, string code)
     {
-        var d = Selected;
-        if (d == null || !d.Wireless) { Log("Select a Wi-Fi phone to disconnect."); return; }
+        if (!AddrRx.IsMatch(addr)) { Log("That address should look like 192.168.1.20:37099 (IP, colon, port).", "warn"); return; }
+        Log($"Pairing with {addr}…");
+        var (_, o) = await Tools.AdbAsync(20000, "pair", addr, code);
+        if (!o.Contains("Successfully", StringComparison.OrdinalIgnoreCase))
+        {
+            Log("Pairing failed: " + FirstLine(o), "error");
+            Log("Codes expire quickly. Open a fresh pairing code and try again.", "warn");
+            return;
+        }
+        Log("Paired! Connecting…", "good");
+        var d = await ConnectAfterPairing(addr.Split(':')[0], CancellationToken.None);
+        if (d != null)
+        {
+            Log($"{d.Model} added wirelessly.", "good");
+            if (cfg.AutoMirror && mirrorsOpen == 0) StartMirror(d);
+        }
+        else Log("Paired, but couldn't connect. Use \"Connect by IP\" with the address on the Wireless debugging screen.", "warn");
+    }
+
+    /// <summary>After pairing, find the phone's connect port (it differs from the pairing port) and connect.</summary>
+    async Task<Device?> ConnectAfterPairing(string ip, CancellationToken ct)
+    {
+        for (int i = 0; i < 20; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var devs = await Tools.DevicesAsync();
+            var d = devs.FirstOrDefault(x => x.Ready && x.Wireless && (x.Serial.StartsWith(ip + ":") || x.Serial.Contains("_adb-tls-connect")));
+            if (d != null) { await RefreshDevices(); return d; }
+
+            var found = await Mdns.BrowseAsync("_adb-tls-connect._tcp.local", 1500, ct);
+            foreach (var f in found.Where(f => f.Address.ToString() == ip))
+                await Tools.AdbAsync(8000, "connect", f.Endpoint);
+
+            var (_, s) = await Tools.AdbAsync(4000, "mdns", "services");
+            foreach (var line in s.Split('\n'))
+                if (line.Contains("_adb-tls-connect") && line.Contains(ip + ":"))
+                {
+                    var m = AddrRx.Match(line);
+                    if (m.Success) await Tools.AdbAsync(8000, "connect", m.Value);
+                }
+            await Task.Delay(800, ct);
+        }
+        return null;
+    }
+
+    async Task Disconnect(Device? d)
+    {
+        if (d == null || !d.Wireless) return;
         await Tools.AdbAsync("disconnect", d.Serial);
         if (cfg.LastIp != "" && d.Serial.StartsWith(cfg.LastIp + ":")) { cfg.LastIp = ""; cfg.Save(); }
         Log($"Disconnected {d.Model}.");
@@ -931,80 +862,33 @@ public class MainForm : Form
 
     // ================= extras =================
 
-    Task Screenshot() => Screenshot(null);
-
     async Task Screenshot(Device? target)
     {
-        var d = target ?? Selected;
-        if (d is not { Ready: true }) { Log("Connect a phone first."); return; }
+        var d = target ?? DefaultDevice;
+        if (d is not { Ready: true }) { Toast("Connect a phone first"); return; }
         Directory.CreateDirectory(ShotDir);
         var file = Path.Combine(ShotDir, $"{Safe(d.Model)} {DateTime.Now:yyyy-MM-dd HH-mm-ss}.png");
-        Log("Taking screenshot…");
         if (await Tools.ScreenshotAsync(d.Serial, file))
         {
-            Log($"Saved {file}");
+            Log($"Screenshot saved: {file}", "good");
+            Toast("Screenshot saved");
             try { Process.Start("explorer.exe", $"/select,\"{file}\""); } catch { }
         }
         else
         {
             try { File.Delete(file); } catch { }
-            Log("Screenshot failed. Is the phone unlocked?");
+            Log("Screenshot failed. Is the phone unlocked?", "warn");
         }
-    }
-
-    void ShowHelp()
-    {
-        MessageBox.Show(this,
-            "ONE-TIME PHONE SETUP\n" +
-            "1. On your phone open Settings › About phone.\n" +
-            "    (Samsung: About phone › Software information.)\n" +
-            "2. Tap \"Build number\" 7 times until it says you're a developer.\n" +
-            "3. Go to Settings › System › Developer options and turn on \"USB debugging\".\n" +
-            "4. Plug the phone into this laptop. Unlock it and tap \"Allow\"\n" +
-            "    (tick \"Always allow from this computer\").\n" +
-            "5. That's it. The phone opens here automatically.\n\n" +
-            "WIRELESS\n" +
-            "• Plug in once and Phone Mirror turns on Wi-Fi mode for you. Unplug and the\n" +
-            "   mirror carries on over Wi-Fi. (Needs one plug-in again after the phone restarts.)\n" +
-            "• No cable at all (Android 11+): \"Add phone wirelessly (QR code)\".\n\n" +
-            "IN THE PHONE WINDOW\n" +
-            "• Click / type / scroll to use the phone\n" +
-            "• Right-click = Back,  Middle-click = Home\n" +
-            "• Alt+F full screen,  Alt+R rotate,  Alt+O phone screen off\n" +
-            "• Drag an .apk onto the window to install it, or any other file to copy it to the phone's Download folder",
-            "Phone Mirror — Help", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     // ================= helpers =================
 
-    static FlowLayoutPanel Flow() => new()
+    void Log(string msg, string level = "")
     {
-        AutoSize = true,
-        AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        WrapContents = true,
-        Margin = new Padding(0),
-    };
-
-    CheckBox Check(string text, bool value, Action<bool> set, string tip)
-    {
-        var c = new CheckBox
-        {
-            Text = text,
-            Checked = value,
-            AutoSize = true,
-            ForeColor = Theme.Text,
-            Margin = new Padding(0, 4, 18, 6),
-            Cursor = Cursors.Hand,
-        };
-        c.CheckedChanged += (_, _) => { set(c.Checked); cfg.Save(); };
-        new ToolTip().SetToolTip(c, tip);
-        return c;
-    }
-
-    void Log(string msg)
-    {
-        if (log.TextLength > 60000) log.Text = log.Text[^30000..];
-        log.AppendText($"{DateTime.Now:HH:mm:ss}  {msg}\r\n");
+        var time = DateTime.Now.ToString("HH:mm:ss");
+        logHistory.Add((time, msg, level));
+        if (logHistory.Count > 400) logHistory.RemoveRange(0, 100);
+        Post(new { type = "log", time, text = msg, level });
     }
 
     void Ui(Action a)
@@ -1017,6 +901,11 @@ public class MainForm : Form
     {
         Directory.CreateDirectory(dir);
         try { Process.Start("explorer.exe", $"\"{dir}\""); } catch { }
+    }
+
+    static void OpenUrl(string url)
+    {
+        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
     }
 
     static string WithPort(string ip) => ip.Contains(':') ? ip : ip + ":5555";
