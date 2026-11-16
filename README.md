@@ -6,7 +6,7 @@ Built on [scrcpy](https://github.com/Genymobile/scrcpy). Nothing needs to be ins
 
 ## Download
 
-Get **PhoneMirror.exe** from the [latest release](../../releases/latest) and double-click it. It's a single file with no installer.
+**[willhrom.github.io/PhoneMirror](https://willhrom.github.io/PhoneMirror/)**: or get **PhoneMirror.exe** from the [latest release](../../releases/latest) and double-click it. It's a single file with no installer.
 If SmartScreen warns you, click **More info → Run anyway**.
 
 The first time it runs, it downloads the mirroring engine (scrcpy, ~10 MB) to `%LOCALAPPDATA%\PhoneMirror`.
