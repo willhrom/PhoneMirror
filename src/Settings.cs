@@ -5,13 +5,19 @@ namespace PhoneMirror;
 class Settings
 {
     public string LastIp { get; set; } = "";
-    public int MaxSize { get; set; } = 1920;
+    /// <summary>-1 = Auto (picks per USB / Wi-Fi), 0 = full resolution, else max size in pixels.</summary>
+    public int MaxSize { get; set; } = -1;
     public bool Audio { get; set; } = true;
     public bool ScreenOff { get; set; }
     public bool StayAwake { get; set; } = true;
     public bool AlwaysOnTop { get; set; }
     public bool Fullscreen { get; set; }
     public bool Record { get; set; }
+    public bool AutoMirror { get; set; } = true;
+    public bool AutoWifi { get; set; } = true;
+    public bool StartWithWindows { get; set; }
+    public bool InstallAsked { get; set; }
+    public bool TrayTipShown { get; set; }
 
     static string FilePath => Path.Combine(Tools.AppDir, "settings.json");
 

@@ -21,9 +21,13 @@ The first time it runs, it downloads the mirroring engine (scrcpy, ~10 MB) to `%
 
 ## Features
 
+- **Opens by itself** when you plug in your phone (phones are detected instantly)
+- **Goes wireless automatically**: plugging in also turns on Wi-Fi mode, so you can unplug and the mirror switches to Wi-Fi
+- **Add phone wirelessly (QR code)**: scan a code with Android 11+ Wireless debugging, with nothing to type
+- **Auto quality**: sharp over USB, low-lag over Wi-Fi
+- **Start with Windows**: runs quietly in the tray, so plugging in your phone just works
+- Offers to add itself to the Start menu and desktop, and **updates itself** from this repo's releases
 - Mirror and control over **USB** or **Wi-Fi**
-- **Set up Wi-Fi (via USB)**: plug in once, then go wireless (it reconnects automatically until the phone restarts)
-- **Pair without cable**: Android 11+ wireless debugging pairing
 - Phone audio on the laptop (Android 11+)
 - Turn the phone screen off while mirroring
 - Record to MP4 (`Videos\Phone Mirror`) and take screenshots (`Pictures\Phone Mirror`)

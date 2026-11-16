@@ -58,23 +58,7 @@ static class Tools
         if (url == null || name == null) throw new Exception("Couldn't find the Windows download in the latest scrcpy release.");
 
         var tmp = Path.Combine(Path.GetTempPath(), name);
-        using (var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
-        {
-            resp.EnsureSuccessStatusCode();
-            long total = resp.Content.Headers.ContentLength ?? 0, done = 0;
-            int lastPct = -1;
-            await using var src = await resp.Content.ReadAsStreamAsync();
-            await using var dst = File.Create(tmp);
-            var buf = new byte[81920];
-            int r;
-            while ((r = await src.ReadAsync(buf)) > 0)
-            {
-                await dst.WriteAsync(buf.AsMemory(0, r));
-                done += r;
-                int pct = total > 0 ? (int)(done * 100 / total) : 0;
-                if (pct != lastPct) { lastPct = pct; progress($"Downloading scrcpy {tag}… {pct}%", pct); }
-            }
-        }
+        await DownloadAsync(url, tmp, pct => progress($"Downloading scrcpy {tag}… {pct}%", pct));
 
         progress("Unpacking…", 100);
         if (Adb != null) await RunAsync(Adb, new[] { "kill-server" }, 5000);
@@ -90,6 +74,48 @@ static class Tools
         return tag;
     }
 
+    public static HttpClient NewHttp()
+    {
+        var http = new HttpClient();
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("PhoneMirror");
+        return http;
+    }
+
+    public static async Task DownloadAsync(string url, string path, Action<int> progress)
+    {
+        using var http = NewHttp();
+        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+        resp.EnsureSuccessStatusCode();
+        long total = resp.Content.Headers.ContentLength ?? 0, done = 0;
+        int lastPct = -1;
+        await using var src = await resp.Content.ReadAsStreamAsync();
+        await using var dst = File.Create(path);
+        var buf = new byte[81920];
+        int r;
+        while ((r = await src.ReadAsync(buf)) > 0)
+        {
+            await dst.WriteAsync(buf.AsMemory(0, r));
+            done += r;
+            int pct = total > 0 ? (int)(done * 100 / total) : 0;
+            if (pct != lastPct) { lastPct = pct; progress(pct); }
+        }
+    }
+
+    /// <summary>Start info for a hidden adb process (mDNS enabled for wireless pairing).</summary>
+    public static ProcessStartInfo AdbStartInfo(params string[] args)
+    {
+        var psi = new ProcessStartInfo(Adb!)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            WorkingDirectory = Path.GetDirectoryName(Adb) ?? "",
+        };
+        psi.Environment["ADB_MDNS_OPENSCREEN"] = "1";
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        return psi;
+    }
+
     /// <summary>Runs a command hidden and returns its combined output.</summary>
     public static async Task<(int Code, string Output)> RunAsync(string exe, IEnumerable<string> args, int timeoutMs = 20000)
     {
@@ -101,6 +127,7 @@ static class Tools
             RedirectStandardError = true,
             WorkingDirectory = Path.GetDirectoryName(exe) ?? "",
         };
+        psi.Environment["ADB_MDNS_OPENSCREEN"] = "1";
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi)!;
@@ -142,16 +169,8 @@ static class Tools
     /// <summary>Saves a PNG screenshot of the phone.</summary>
     public static async Task<bool> ScreenshotAsync(string serial, string file)
     {
-        var psi = new ProcessStartInfo(Adb!)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        foreach (var a in new[] { "-s", serial, "exec-out", "screencap", "-p" }) psi.ArgumentList.Add(a);
+        var psi = AdbStartInfo("-s", serial, "exec-out", "screencap", "-p");
         using var p = Process.Start(psi)!;
-        _ = p.StandardError.ReadToEndAsync();
         await using (var fs = File.Create(file))
             await p.StandardOutput.BaseStream.CopyToAsync(fs);
         using var cts = new CancellationTokenSource(15000);
