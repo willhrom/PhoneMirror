@@ -49,6 +49,9 @@ class Settings
     public List<KnownPhone> Phones { get; set; } = new();
     /// <summary>This PC's identity for the phone app (so the phone remembers it).</summary>
     public string PcId { get; set; } = "";
+    /// <summary>Let phone-app phones link straight to this laptop over Wi-Fi Direct (no shared Wi-Fi needed).</summary>
+    public bool AllowDirect { get; set; } = true;
+    public string DirectPass { get; set; } = "";
 
     static string FilePath => Path.Combine(Tools.AppDir, "settings.json");
 

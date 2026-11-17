@@ -390,6 +390,9 @@ class MirrorService : Service() {
                         val code = m.optString("code")
                         if (Prefs.isTrusted(this, pcId) || (code.isNotEmpty() && code == Prefs.code(this))) {
                             Prefs.trust(this, pcId)
+                            m.optJSONObject("direct")?.let {
+                                Prefs.saveLaptop(this, pcId, pcName, it.optString("ssid"), it.optString("pass"))
+                            }
                             approved = true
                             settings = Settings(
                                 m.optInt("maxSize", 1600).coerceIn(480, 2560),

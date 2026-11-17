@@ -47,6 +47,9 @@ class MainActivity : Activity() {
     private lateinit var bgSwitch: Switch
     private lateinit var bootSwitch: Switch
     private lateinit var batteryButton: Button
+    private lateinit var directCard: LinearLayout
+    private lateinit var directText: TextView
+    private lateinit var directButton: Button
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -153,6 +156,21 @@ class MainActivity : Activity() {
         bgSwitch.isChecked = Prefs.background(this)
         bootSwitch.isChecked = Prefs.startAtBoot(this)
         bootSwitch.isEnabled = Prefs.background(this)
+        val laptop = Prefs.lastLaptop(this)
+        directCard.visibility = if (laptop == null) View.GONE else View.VISIBLE
+        if (laptop != null) {
+            if (!DirectLink.supported()) {
+                directText.text = "Direct connections need Android 10 or newer. Use your phone's hotspot instead."
+                directButton.visibility = View.GONE
+            } else {
+                directText.text = DirectLink.state
+                    ?: "Link straight to ${laptop.name}, no Wi-Fi or hotspot needed. Phone Mirror must be open on the laptop."
+                directText.setTextColor(if (DirectLink.connected) good else muted)
+                directButton.visibility = View.VISIBLE
+                directButton.text = if (DirectLink.active) "Disconnect" else "Connect directly to ${laptop.name}"
+            }
+        }
+
         val pm = getSystemService(PowerManager::class.java)
         batteryButton.visibility = if (pm.isIgnoringBatteryOptimizations(packageName)) View.GONE else View.VISIBLE
     }
@@ -260,6 +278,23 @@ class MainActivity : Activity() {
         }
         status.addView(mainButton)
         root.addView(status)
+
+        // direct link (no Wi-Fi)
+        directCard = cardView()
+        directCard.addView(label("NO WI-FI?", 12f, muted, bold = true))
+        directText = label("", 14f, muted).apply { setPadding(0, dp(6), 0, 0) }
+        directCard.addView(directText)
+        directButton = smallButton("Connect directly") {
+            val l = Prefs.lastLaptop(this) ?: return@smallButton
+            if (DirectLink.active) DirectLink.disconnect(this)
+            else {
+                if (!MirrorService.running) MirrorService.startIdle(this)
+                DirectLink.connect(this, l) { runOnUiThread { refresh() } }
+            }
+            refresh()
+        }
+        directCard.addView(directButton)
+        root.addView(directCard)
 
         // pairing code
         val code = cardView()

@@ -57,7 +57,7 @@ function connect(code){
   waiting('Connecting…', P.name ? 'to ' + P.name : '');
   ws = new WebSocket(P.url);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => send({ t:'hello', pcId:P.pcId, pcName:P.pcName, code: code || '', maxSize:P.maxSize, bitrate:P.bitrate, fps:P.fps, audio:!!P.audio });
+  ws.onopen = () => send({ t:'hello', pcId:P.pcId, pcName:P.pcName, code: code || '', maxSize:P.maxSize, bitrate:P.bitrate, fps:P.fps, audio:!!P.audio, direct:P.direct || null });
   ws.onmessage = e => typeof e.data === 'string' ? onText(JSON.parse(e.data)) : onVideo(e.data);
   ws.onclose = () => { if (!closedByUs) tell({ type:'closed' }); };
   ws.onerror = () => tell({ type:'error', text:'Couldn’t reach the phone. Is Phone Mirror running on it, on the same Wi-Fi?' });
@@ -215,7 +215,7 @@ $('codeGo').onclick = () => {
   const v = $('code').value.trim();
   if (!/^\d{4}$/.test(v)) { $('codeErr').textContent = 'Enter the 4 digits shown on your phone.'; return; }
   $('codeErr').textContent = '';
-  send({ t:'hello', pcId:P.pcId, pcName:P.pcName, code:v, maxSize:P.maxSize, bitrate:P.bitrate, fps:P.fps, audio:!!P.audio });
+  send({ t:'hello', pcId:P.pcId, pcName:P.pcName, code:v, maxSize:P.maxSize, bitrate:P.bitrate, fps:P.fps, audio:!!P.audio, direct:P.direct || null });
   waiting('Connecting…', '');
 };
 $('code').addEventListener('keydown', e => { if (e.key === 'Enter') $('codeGo').click(); });

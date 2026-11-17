@@ -94,6 +94,13 @@ public class MainForm : Form
 
         if (!await InitWebView()) return;
         if (cfg.PcId == "") { cfg.PcId = Guid.NewGuid().ToString("N"); cfg.Save(); }
+        DirectLink.Changed += () => Ui(() =>
+        {
+            if (DirectLink.Error != null && DirectLink.Error != lastDirectError) Log(DirectLink.Error, "warn");
+            lastDirectError = DirectLink.Error;
+            PushState();
+        });
+        UpdateDirect();
         _ = DiscoverApps();
         appTimer.Tick += (_, _) => _ = DiscoverApps();
         appTimer.Start();
@@ -218,6 +225,7 @@ public class MainForm : Form
         closing = true;
         poll.Stop();
         appTimer.Stop();
+        DirectLink.Stop();
         foreach (var f in appFrames.ToList())
         {
             try { f.Detach(closeMirror: true); f.ForceClose(); } catch { }
@@ -280,6 +288,7 @@ public class MainForm : Form
             phones = PhonesView(),
             settings = cfg,
             update = updateVersion,
+            direct = new { allowed = cfg.AllowDirect, running = DirectLink.Running, error = DirectLink.Error, pc = Environment.MachineName },
             displayHz = DisplayHz(),
             busy = busyText == null ? null : new { text = busyText, pct = busyPct },
         });
@@ -383,6 +392,12 @@ public class MainForm : Form
             case "maxSize": cfg.MaxSize = value.GetInt32(); break;
             case "frameRate": cfg.FrameRate = value.GetInt32(); break;
             case "frameStyle": cfg.FrameStyle = value.GetString() ?? "Black"; break;
+            case "allowDirect":
+                cfg.AllowDirect = B();
+                cfg.Save();
+                if (cfg.AllowDirect) DirectLink.Stop();
+                UpdateDirect(retry: true);
+                break;
             case "buttonStrip": cfg.ButtonStrip = value.GetString() ?? "hover"; break;
         }
         cfg.Save();
@@ -755,6 +770,27 @@ public class MainForm : Form
     readonly List<PhoneFrameForm> appFrames = new();
     readonly List<ScreenHostForm> appHosts = new();   // phone-app mirrors in a plain window
     DateTime lastMdns = DateTime.MinValue, sweepUntil = DateTime.MinValue;
+    string? lastDirectError;
+
+    string DirectSsid => "DIRECT-PM-" + (cfg.PcId.Length >= 4 ? cfg.PcId[..4].ToUpperInvariant() : "0000");
+
+    string DirectPass()
+    {
+        if (cfg.DirectPass.Length < 8)
+        {
+            cfg.DirectPass = RandomNumberGenerator.GetString("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789", 12);
+            cfg.Save();
+        }
+        return cfg.DirectPass;
+    }
+
+    /// <summary>Runs the private Wi-Fi Direct link while it's useful: allowed, and you have phone-app phones.</summary>
+    void UpdateDirect(bool retry = false)
+    {
+        bool want = cfg.AllowDirect && cfg.Phones.Any(p => p.IsApp) && !closing;
+        if (want && !DirectLink.Running && (retry || DirectLink.Error == null)) DirectLink.Start(DirectSsid, DirectPass());
+        else if (!want && DirectLink.Running) DirectLink.Stop();
+    }
     DateTime lastScan = DateTime.MinValue;
     bool discovering;
 
@@ -788,6 +824,10 @@ public class MainForm : Form
             // 2) Saved phones that are offline: one tiny request each (cheap).
             var targets = cfg.Phones.Where(p => p.IsApp && p.LastIp != "" && !AppOnline(p))
                 .Select(p => (Ip: p.LastIp, Port: p.Port > 0 ? p.Port : 8765)).ToList();
+
+            // 2b) A phone that joined this laptop's direct link: look on that little network.
+            if (DirectLink.Running && !cfg.Phones.Any(AppOnline))
+                targets.AddRange(DirectLink.PeerAddresses().Select(ip => (Ip: ip, Port: 8765)));
 
             // 3) Sweep the local network only when it can help: while setting up, when asked,
             //    or (rarely) when a saved phone may have changed address.
@@ -833,6 +873,7 @@ public class MainForm : Form
             cfg.Phones.Add(ph);
             Log($"Found {info.Name} (Phone Mirror app). Saved to My phones.", "good");
             changed = true;
+            UpdateDirect();
         }
         ph.IsApp = true;
         ph.Model = info.Name;
@@ -913,7 +954,9 @@ public class MainForm : Form
         int q = ph.Quality ?? cfg.MaxSize;
         int maxSize = q < 0 ? 1600 : q == 0 ? 2400 : q;
         int bitrate = (fps > 60 ? 16 : 12) * 1_000_000;
-        var p = new { url = $"ws://{a.Ip}:{a.Port}/", pcId = cfg.PcId, pcName = Environment.MachineName, name = ph.DisplayName, maxSize, bitrate, fps, audio = cfg.Audio };
+        // The phone remembers these, so later it can link straight to this laptop without shared Wi-Fi.
+        object? direct = cfg.AllowDirect ? new { ssid = DirectSsid, pass = DirectPass() } : null;
+        var p = new { url = $"ws://{a.Ip}:{a.Port}/", pcId = cfg.PcId, pcName = Environment.MachineName, name = ph.DisplayName, maxSize, bitrate, fps, audio = cfg.Audio, direct };
         var url = $"http://127.0.0.1:{LocalWeb.Port}/mirror.html#" + Uri.EscapeDataString(JsonSerializer.Serialize(p));
 
         string look = string.IsNullOrEmpty(ph.Look) ? cfg.FrameStyle : ph.Look;

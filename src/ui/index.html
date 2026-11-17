@@ -225,6 +225,7 @@ table.sc td:last-child{text-align:right}
         <div class="ct">Automatic</div>
         <label class="row"><div><div class="t">Open when plugged in</div><div class="d">Mirror starts as soon as you connect</div></div><span class="sw"><input type="checkbox" data-key="autoMirror"><span></span></span></label>
         <label class="row"><div><div class="t">Go wireless when unplugged</div><div class="d">Keeps going over Wi-Fi</div></div><span class="sw"><input type="checkbox" data-key="autoWifi"><span></span></span></label>
+        <label class="row"><div><div class="t">Connect without Wi-Fi</div><div class="d" id="directNote">Phone-app phones link straight to this laptop</div></div><span class="sw"><input type="checkbox" data-key="allowDirect"><span></span></span></label>
         <label class="row"><div><div class="t">Start with Windows</div><div class="d">Waits quietly in the tray</div></div><span class="sw"><input type="checkbox" data-key="startWithWindows"><span></span></span></label>
       </div>
       <div class="card">
@@ -459,7 +460,7 @@ function render(){
       const stIcon = st[0]==='good'||st[0]==='live' ? IC.check : st[0]==='off' ? IC.clock : IC.alert;
       const hint = p.status === 'unauthorized' ? '<div class="hint">Unlock your phone and tap “Allow” on the USB debugging prompt.</div>'
                  : p.status === 'offline' ? '<div class="hint">Unplug and plug it back in.</div>'
-               : p.app && !p.online ? '<div class="hint muted">Open Phone Mirror on the phone (same Wi-Fi) and it shows up here.</div>' : '';
+               : p.app && !p.online ? `<div class="hint muted">Open Phone Mirror on the phone. No shared Wi-Fi? Tap “Connect directly to ${esc((S.direct||{}).pc||'this laptop')}” in the phone app.</div>` : '';
       const main = p.online
         ? `<button class="primary" onclick="post('mirror',{id:'${id}'})">${IC.play}Mirror</button>`
         : p.saved && p.status === 'away'
@@ -488,6 +489,14 @@ function render(){
   document.querySelectorAll('.look').forEach(b => b.classList.toggle('on', b.dataset.look === S.settings.frameStyle));
   document.querySelectorAll('#strip button').forEach(b => b.classList.toggle('on', b.dataset.strip === S.settings.buttonStrip));
   $('strip').style.opacity = S.settings.frameStyle === 'Off' ? .4 : 1;
+
+  // direct link
+  const dn = $('directNote'), d = S.direct || {};
+  dn.style.color = d.error && d.allowed ? 'var(--warn)' : '';
+  dn.textContent = !d.allowed ? 'Phone-app phones link straight to this laptop'
+    : d.error ? d.error
+    : d.running ? 'On. In the phone app, tap “Connect directly”'
+    : 'Turns on once you add a phone-app phone';
 
   // busy
   $('busy').classList.toggle('hidden', !S.busy);
@@ -595,8 +604,8 @@ function handle(m){
 if (wv) { wv.addEventListener('message', e => handle(e.data)); post('ready'); }
 else {
   // Preview data (when opened outside the app)
-  handle({type:'state', version:'1.0.11', displayHz:120, engine:{ready:true}, update:null, busy:null,
-    settings:{autoMirror:true,autoWifi:true,startWithWindows:false,audio:true,screenOff:false,stayAwake:true,alwaysOnTop:false,fullscreen:false,record:false,maxSize:-1,frameRate:0,frameStyle:'Black',buttonStrip:'hover',lastIp:'192.168.1.20'},
+  handle({type:'state', version:'1.0.15', displayHz:120, direct:{allowed:true,running:true,error:null,pc:'WILL-LAPTOP'}, engine:{ready:true}, update:null, busy:null,
+    settings:{autoMirror:true,autoWifi:true,startWithWindows:false,audio:true,screenOff:false,stayAwake:true,alwaysOnTop:false,fullscreen:false,record:false,maxSize:-1,frameRate:0,allowDirect:true,frameStyle:'Black',buttonStrip:'hover',lastIp:'192.168.1.20'},
     phones: location.hash === '#empty' ? [] : [
       {id:'abc',name:'Will’s Pixel',nickname:'Will’s Pixel',model:'Pixel 8',saved:true,online:true,status:'ready',usb:true,wifi:true,mirroring:true,lastSeen:'today at 4:20 PM',lastIp:'192.168.1.20',look:'',quality:null,customWindow:true},
       {id:'xyz',name:'Galaxy S23',nickname:'',model:'Galaxy S23',saved:false,online:false,status:'unauthorized',usb:false,wifi:false,mirroring:false,lastSeen:'',lastIp:'',look:'',quality:null},
