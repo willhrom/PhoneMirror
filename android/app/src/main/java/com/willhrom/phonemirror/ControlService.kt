@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.view.KeyEvent
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -89,7 +90,23 @@ class ControlService : AccessibilityService() {
     private var pendingUp = false
     private var lastSent = 0L
 
+    private var downAt: PointF? = null
+    private val startHeld = Runnable { downAt?.let { downAt = null; beginStroke(it) } }
+
+    /** A press: wait briefly to see if it's a quick tap (sent as one clean tap) or a hold/drag. */
     private fun down(p: PointF) {
+        main.removeCallbacks(startHeld)
+        downAt = p
+        main.postDelayed(startHeld, 150)
+    }
+
+    private fun tap(p: PointF) {
+        val path = Path().apply { moveTo(p.x, p.y) }
+        dispatchGesture(GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 40)).build(), null, null)
+    }
+
+    private fun beginStroke(p: PointF) {
         stroke = null
         busy = false
         pending = null
@@ -103,11 +120,26 @@ class ControlService : AccessibilityService() {
     }
 
     private fun move(p: PointF) {
+        val d = downAt
+        if (d != null) {
+            // Moved before the tap window ended: it's a drag/scroll, start the finger now.
+            if (abs(p.x - d.x) + abs(p.y - d.y) < 12f) return
+            main.removeCallbacks(startHeld)
+            downAt = null
+            beginStroke(d)
+        }
         pending = p
         pump()
     }
 
     private fun up() {
+        val d = downAt
+        if (d != null) {
+            main.removeCallbacks(startHeld)
+            downAt = null
+            tap(d)
+            return
+        }
         pendingUp = true
         pump()
     }
@@ -215,9 +247,26 @@ class ControlService : AccessibilityService() {
         n.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, b)
     }
 
+    /** Android 13+: a real keyboard connection to the focused text field (proper Enter, Backspace, typing). */
+    private fun imeConnection(): android.accessibilityservice.InputMethod.AccessibilityInputConnection? {
+        if (Build.VERSION.SDK_INT < 33) return null
+        return try { inputMethod?.currentInputConnection } catch (_: Exception) { null }
+    }
+
+    private fun sendKey(code: Int): Boolean {
+        val ic = imeConnection() ?: return false
+        ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+        ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+        return true
+    }
+
     /** Types at the cursor, replacing any selected text. */
     private fun type(s: String) {
         if (s.isEmpty()) return
+        if (Build.VERSION.SDK_INT >= 33) {
+            val ic = imeConnection()
+            if (ic != null) { ic.commitText(s, 1, null); return }
+        }
         val n = focused() ?: return
         if (!n.isEditable) return
         val t = currentText(n)
@@ -228,6 +277,7 @@ class ControlService : AccessibilityService() {
 
     /** Deletes the selection, or the character before the cursor. */
     private fun backspace() {
+        if (sendKey(KeyEvent.KEYCODE_DEL)) return
         val n = focused() ?: return
         val t = currentText(n)
         val (a, b) = selection(n, t.length)
@@ -238,11 +288,10 @@ class ControlService : AccessibilityService() {
     }
 
     private fun enter() {
+        if (sendKey(KeyEvent.KEYCODE_ENTER)) return
         val n = focused() ?: return
-        if (Build.VERSION.SDK_INT >= 30) {
+        val done = Build.VERSION.SDK_INT >= 30 &&
             n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-        } else {
-            setText(n, currentText(n) + "\n")
-        }
+        if (!done && n.isMultiLine) type("\n")
     }
 }

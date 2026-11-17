@@ -420,6 +420,15 @@ class MirrorService : Service() {
                         }
                     }
                     "sync" -> if (approved) { needKey = true; encoder?.requestKeyFrame() }
+                    "quality" -> if (approved) {
+                        // The laptop's phone window changed size: re-encode at a size that fits it.
+                        val s = settings
+                        settings = Settings(
+                            m.optInt("maxSize", s.maxSize).coerceIn(480, 2560),
+                            m.optInt("bitrate", s.bitrate).coerceIn(1_000_000, 60_000_000),
+                            s.fps, s.audio)
+                        main.post { if (encoder != null && Pair(captureSize(settings.maxSize).first, captureSize(settings.maxSize).second) != size) startEncoding() }
+                    }
                     "key" -> if (approved) key(m.optString("k"))
                     else -> if (approved) {
                         val ctl = ControlService.instance

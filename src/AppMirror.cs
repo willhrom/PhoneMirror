@@ -171,6 +171,11 @@ class ScreenHostForm : Form
         Activate();
     }
 
+    public void SetQuality(int maxSize, int bitrate)
+    {
+        try { _ = web.CoreWebView2?.ExecuteScriptAsync($"pm.quality({maxSize},{bitrate})"); } catch { }
+    }
+
     public void Key(string k)
     {
         try { _ = web.CoreWebView2?.ExecuteScriptAsync($"pm.key({JsonSerializer.Serialize(k)})"); } catch { }

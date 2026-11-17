@@ -942,6 +942,21 @@ public class MainForm : Form
         catch { return null; }
     }
 
+    /// <summary>Video size for the phone app on Auto: the window's long side (a bit over for sharpness).</summary>
+    int AutoAppSize(int windowLongSide)
+    {
+        int screenH = Screen.PrimaryScreen?.Bounds.Height ?? 1080;
+        int w = windowLongSide > 0 ? windowLongSide : (int)(screenH * 0.8);
+        return Math.Clamp((int)(w * 1.1) / 16 * 16, 640, 1600);
+    }
+
+    /// <summary>Enough bits for sharp scrolling at this size, not more (the phone backs off further if Wi-Fi lags).</summary>
+    static int AppBitrate(int maxSize, int fps)
+    {
+        double pixels = maxSize * (maxSize * 0.46);
+        return (int)Math.Clamp(pixels * fps * 0.14, 2_500_000, 12_000_000);
+    }
+
     async Task StartAppMirror(KnownPhone ph)
     {
         if (appMirroring.Contains(ph.Id)) { Toast($"{ph.DisplayName} is already open"); return; }
@@ -949,11 +964,13 @@ public class MainForm : Form
         if (WebEnv == null || !appPhones.TryGetValue(ph.Id, out var a)) return;
         LocalWeb.Start();
 
-        // Wi-Fi defaults tuned for low lag: 1280 at 60 fps; the phone raises quality when the link allows.
+        // Wi-Fi defaults tuned for low lag. On Auto, the video is sized to the phone window you actually
+        // see (no point sending more pixels than it shows) and follows it when you resize.
         int fps = cfg.FrameRate > 0 ? cfg.FrameRate : 60;
         int q = ph.Quality ?? cfg.MaxSize;
-        int maxSize = q < 0 ? 1280 : q == 0 ? 2400 : q;
-        int bitrate = (fps > 60 ? 12 : 8) * 1_000_000;
+        bool autoSize = q < 0;
+        int maxSize = autoSize ? AutoAppSize(ph.WindowSize) : q == 0 ? 2400 : q;
+        int bitrate = AppBitrate(maxSize, fps);
         // The phone remembers these, so later it can link straight to this laptop without shared Wi-Fi.
         object? direct = cfg.AllowDirect ? new { ssid = DirectSsid, pass = DirectPass() } : null;
         var p = new { url = $"ws://{a.Ip}:{a.Port}/", pcId = cfg.PcId, pcName = Environment.MachineName, name = ph.DisplayName, maxSize, bitrate, fps, audio = cfg.Audio, direct };
@@ -990,6 +1007,15 @@ public class MainForm : Form
                 ph.WindowX = at.X;
                 ph.WindowY = at.Y;
                 cfg.Save();
+                if (autoSize)
+                {
+                    int want = AutoAppSize(longSide);
+                    if (Math.Abs(want - maxSize) > maxSize / 5)
+                    {
+                        maxSize = want;
+                        host.SetQuality(maxSize, AppBitrate(maxSize, fps));
+                    }
+                }
             },
         };
         appMirroring.Add(ph.Id);

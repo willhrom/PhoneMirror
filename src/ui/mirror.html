@@ -181,16 +181,44 @@ canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('auxclick', e => e.preventDefault());
 
-let wheelDy = 0, wheelPos = null, wheelTimer = null;
+// Mouse wheel / two-finger touchpad scrolling = one continuous finger drag on the phone
+// (separate quick swipes looked like long presses and selected text).
+let wheel = null, wheelEnd = null, wheelSent = 0;
+function wheelFinish(){
+  if (!wheel) return;
+  send({ t:'move', x: wheel.x, y: wheel.y });
+  send({ t:'up' });
+  wheel = null;
+}
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  wheelDy += e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
-  wheelPos = pos(e);
-  if (!wheelTimer) wheelTimer = setTimeout(() => {
-    wheelTimer = null;
-    if (Math.abs(wheelDy) >= 1) send(Object.assign({ t:'scroll', dy: wheelDy }, wheelPos));
-    wheelDy = 0;
-  }, 40);
+  if (down) return;
+  const r = canvas.getBoundingClientRect();
+  const h = vw && vh ? Math.min(r.width / vw, r.height / vh) * vh : r.height;
+  let dy = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY;
+  dy = -dy / h;                       // move the "finger" as far as the content should move
+  if (!wheel) {
+    const p = pos(e);
+    // start where there's room to move in the scroll direction
+    const startY = dy < 0 ? Math.max(p.y, 0.55) : Math.min(p.y, 0.45);
+    wheel = { x: p.x, y: startY, startY };
+    send({ t:'down', x: wheel.x, y: wheel.y });
+    send({ t:'move', x: wheel.x, y: wheel.y + (dy < 0 ? -0.02 : 0.02) });  // moves at once: never a long press
+    wheel.y += dy < 0 ? -0.02 : 0.02;
+  }
+  wheel.y += dy;
+  if (wheel.y < 0.03 || wheel.y > 0.97) {
+    // reached the edge of the screen: lift and put the finger back for more scrolling
+    wheel.y = Math.min(0.97, Math.max(0.03, wheel.y));
+    const x = wheel.x, sy = wheel.startY;
+    wheelFinish();
+    wheel = { x, y: sy, startY: sy };
+    send({ t:'down', x, y: sy });
+  }
+  const now = performance.now();
+  if (now - wheelSent >= 16) { wheelSent = now; send({ t:'move', x: wheel.x, y: wheel.y }); }
+  clearTimeout(wheelEnd);
+  wheelEnd = setTimeout(wheelFinish, 120);
 }, { passive:false });
 
 canvas.addEventListener('keydown', e => {
@@ -229,6 +257,7 @@ setInterval(() => {
 // ---------- called by the app ----------
 window.pm = {
   key: k => send({ t:'key', k }),
+  quality: (maxSize, bitrate) => send({ t:'quality', maxSize, bitrate }),
   shot: () => vw ? canvas.toDataURL('image/png') : '',
   close: () => { closedByUs = true; try { ws.close(); } catch (e) {} },
 };
