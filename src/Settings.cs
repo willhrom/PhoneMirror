@@ -15,7 +15,8 @@ class KnownPhone
     public int WindowSize { get; set; }          // long side of the screen in px; 0 = automatic
     public int WindowX { get; set; } = int.MinValue;
     public int WindowY { get; set; } = int.MinValue;
-    public bool NoH265 { get; set; }             // phone can't encode H.265: use H.264 over Wi-Fi
+    public bool NoH265 { get; set; }
+    public bool NoHighProfile { get; set; }      // encoder rejects the H.264 High profile             // phone can't encode H.265: use H.264 over Wi-Fi
 
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Model : Name;
 }

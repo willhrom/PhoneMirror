@@ -703,7 +703,9 @@ public class MainForm : Form
     readonly List<(Process Proc, PhoneFrameForm? Frame)> active = new();
     bool shutdownDone;
 
-    void StartMirror(Device? target, bool forceH264 = false)
+    readonly HashSet<string> noHighProfile = new();
+
+    void StartMirror(Device? target, bool forceH264 = false, bool forceBasic = false)
     {
         if (!engineReady || Tools.Scrcpy == null) { Toast("Still getting ready…"); return; }
         var d = target ?? DefaultDevice;
@@ -727,13 +729,14 @@ public class MainForm : Form
         bool fast = fps > 60;
 
         int size = phone?.Quality ?? cfg.MaxSize;
-        string bitrate;
-        if (size < 0)
-        {
-            size = d.Wireless ? 1280 : 1920;
-            bitrate = d.Wireless ? (h265 ? (fast ? "8M" : "5M") : (fast ? "12M" : "8M")) : (fast ? "24M" : "16M");
-        }
-        else bitrate = d.Wireless ? (h265 ? (fast ? "10M" : "6M") : (fast ? "14M" : "8M")) : (fast ? "24M" : "16M");
+        if (size < 0) size = d.Wireless ? 1280 : 1920;
+        // Scrolling moves the whole screen at once, which needs lots of bits to stay sharp (no blocks).
+        string bitrate = d.Wireless
+            ? (h265 ? (fast ? "16M" : "12M") : (fast ? "20M" : "16M"))
+            : (fast ? "40M" : "32M");
+
+        // H.264 "High" profile keeps more detail at the same bit rate than the default Baseline.
+        bool highProfile = !h265 && !forceBasic && !(phone?.NoHighProfile ?? false) && !noHighProfile.Contains(KeyOf(d));
 
         var args = new List<string>
         {
@@ -743,6 +746,7 @@ public class MainForm : Form
             $"--video-bit-rate={bitrate}",
             $"--max-fps={fps}",
         };
+        if (highProfile) args.Add("--video-codec-options=profile:int=8");
         if (size > 0) args.Add($"--max-size={size}");
         if (cfg.StayAwake) args.Add("--stay-awake");
         if (cfg.ScreenOff) args.Add("--turn-screen-off");
@@ -807,7 +811,15 @@ public class MainForm : Form
                 noH265.Add(KeyOf(d));
                 if (phone != null) { phone.NoH265 = true; cfg.Save(); }
                 Log($"{d.Model} doesn't support the faster video format over Wi-Fi. Using the standard one.");
-                StartMirror(d, forceH264: true);
+                StartMirror(d, forceH264: true, forceBasic: forceBasic);
+            }
+            else if (code != 0 && highProfile && (DateTime.Now - started).TotalSeconds < 20 && !closing)
+            {
+                // This phone's encoder doesn't accept the High profile: remember and retry with defaults.
+                noHighProfile.Add(KeyOf(d));
+                if (phone != null) { phone.NoHighProfile = true; cfg.Save(); }
+                Log($"Using {d.Model}'s standard video settings.");
+                StartMirror(d, forceH264: forceH264, forceBasic: true);
             }
             else if (code != 0 && (DateTime.Now - started).TotalSeconds < 20)
             {
