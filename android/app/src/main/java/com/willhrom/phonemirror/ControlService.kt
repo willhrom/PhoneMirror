@@ -97,7 +97,7 @@ class ControlService : AccessibilityService() {
     private fun down(p: PointF) {
         main.removeCallbacks(startHeld)
         downAt = p
-        main.postDelayed(startHeld, 150)
+        main.postDelayed(startHeld, 110)
     }
 
     private fun tap(p: PointF) {

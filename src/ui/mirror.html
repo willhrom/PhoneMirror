@@ -19,7 +19,7 @@
   .err{color:#fca5a5;font-size:12.5px;min-height:18px;margin-top:8px}
   .toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);background:#161a23ee;border:1px solid #2d3344;border-radius:12px;padding:8px 14px;font-size:12.5px;max-width:85%;text-align:center;transition:opacity .3s}
   .toast.hidden{opacity:0;pointer-events:none}
-  .stats{position:absolute;left:8px;top:8px;background:#000a;color:#9ff0cf;font:12px/1.4 Consolas,monospace;padding:4px 8px;border-radius:6px;pointer-events:none}
+  .stats{position:absolute;left:8px;top:8px;background:#000a;color:#9ff0cf;font:12px/1.4 Consolas,monospace;padding:4px 8px;border-radius:6px;pointer-events:none;white-space:pre}
   .stats.hidden{display:none}
 </style>
 </head>
@@ -46,6 +46,20 @@ const tell = m => { try { host && host.postMessage(m); } catch (e) {} };
 const $ = id => document.getElementById(id);
 const canvas = $('c'), ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
+// Decoder delay tracking: if the PC's hardware decoder holds frames back, switch to software decoding.
+let hwMode = 'prefer-hardware', decSamples = [], decAvg = 0, switched = false, rtt = 0;
+const sentAt = new Map();
+function noteDecode(ms){
+  decSamples.push(ms);
+  if (decSamples.length > 60) decSamples.shift();
+  decAvg = decSamples.reduce((a, b) => a + b, 0) / decSamples.length;
+  if (!switched && hwMode === 'prefer-hardware' && decSamples.length >= 60 && decAvg > 40) {
+    switched = true;
+    hwMode = 'prefer-software';
+    setup(vw, vh);
+    send({ t:'sync' });
+  }
+}
 let ws, decoder = null, cfg = null, needKey = true, vw = 0, vh = 0, control = true, closedByUs = false;
 let pendingFrame = null, drawQueued = false;
 
@@ -79,6 +93,7 @@ function onText(m){
     case 'config': setup(m.w, m.h); break;
     case 'control': control = !!m.enabled; if (!control) toast('Control is off. Turn it on in the Phone Mirror app on your phone.', 6000); break;
     case 'error': toast(m.text, 8000); tell({ type:'error', text:m.text }); break;
+    case 'pong': rtt = performance.now() - m.ts; break;
   }
 }
 
@@ -88,6 +103,8 @@ function setup(w, h){
   if (decoder) { try { decoder.close(); } catch (e) {} }
   decoder = new VideoDecoder({
     output: frame => {
+      const t0 = sentAt.get(frame.timestamp);
+      if (t0 !== undefined) { sentAt.delete(frame.timestamp); noteDecode(performance.now() - t0); }
       // Draw the moment it's decoded (the canvas is low-latency) instead of waiting for the next refresh.
       ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
       frame.close();
@@ -96,10 +113,114 @@ function setup(w, h){
     },
     error: () => { needKey = true; send({ t:'sync' }); setup(vw, vh); }
   });
-  decoder.configure({ codec:'avc1.64002A', optimizeForLatency:true, hardwareAcceleration:'prefer-hardware' });
+  decoder.configure({ codec:'avc1.42E02A', optimizeForLatency:true, hardwareAcceleration: hwMode });
+  sentAt.clear(); decSamples = [];
   needKey = true;
   tell({ type:'size', w, h });
 }
+
+// Rewrites an H.264 SPS so decoders know frames come out in decode order
+// (VUI bitstream_restriction: max_num_reorder_frames = 0). Returns the original on any doubt.
+function lowLatencySps(nal) {            // nal: Uint8Array starting with the NAL header byte (type 7)
+  try {
+    const rbsp = [];
+    let z = 0;
+    for (let i = 1; i < nal.length; i++) {
+      if (z >= 2 && nal[i] === 3) { z = 0; continue; }   // emulation-prevention byte
+      rbsp.push(nal[i]);
+      z = nal[i] === 0 ? z + 1 : 0;
+    }
+    let pos = 0;
+    const bit = () => { const b = (rbsp[pos >> 3] >> (7 - (pos & 7))) & 1; pos++; if (pos > rbsp.length * 8) throw 0; return b; };
+    const bits = n => { let v = 0; for (let i = 0; i < n; i++) v = v * 2 + bit(); return v; };
+    const ue = () => { let z = 0; while (!bit()) { if (++z > 31) throw 0; } return z ? (2 ** z - 1 + bits(z)) : 0; };
+    const se = () => { const k = ue(); return k & 1 ? (k + 1) / 2 : -k / 2; };
+    const scaling = n => { let last = 8, next = 8; for (let j = 0; j < n; j++) { if (next) { next = (last + se() + 256) % 256; } last = next || last; } };
+
+    const profile = bits(8); bits(8); bits(8); ue();
+    if ([100,110,122,244,44,83,86,118,128,138,139,134,135].includes(profile)) {
+      const chroma = ue(); if (chroma === 3) bit();
+      ue(); ue(); bit();
+      if (bit()) for (let i = 0; i < (chroma === 3 ? 12 : 8); i++) if (bit()) scaling(i < 6 ? 16 : 64);
+    }
+    ue();                                   // log2_max_frame_num
+    const poc = ue();
+    if (poc === 0) ue();
+    else if (poc === 1) { bit(); se(); se(); const n = ue(); for (let i = 0; i < n; i++) se(); }
+    const refs = ue(); bit(); ue(); ue();
+    if (!bit()) bit();                      // frame_mbs_only / mb_adaptive
+    bit();                                  // direct_8x8
+    if (bit()) { ue(); ue(); ue(); ue(); }  // cropping
+    const vuiFlagPos = pos;
+    let copyUpTo;                           // bits copied verbatim before our bitstream_restriction flag
+    let writeVuiFlag = false;
+    if (!bit()) { copyUpTo = vuiFlagPos; writeVuiFlag = true; }
+    else {
+      if (bit()) { if (bits(8) === 255) { bits(16); bits(16); } }
+      if (bit()) bit();
+      if (bit()) { bits(3); bit(); if (bit()) { bits(8); bits(8); bits(8); } }
+      if (bit()) { ue(); ue(); }
+      if (bit()) { bits(32); bits(32); bit(); }
+      if (bit() || bit()) return nal;       // HRD parameters: leave alone
+      bit();                                // pic_struct_present
+      copyUpTo = pos;                       // position of bitstream_restriction_flag
+    }
+
+    const out = [];
+    let acc = 0, n = 0;
+    const put = b => { acc = acc * 2 + b; if (++n === 8) { out.push(acc); acc = 0; n = 0; } };
+    const putBits = (v, k) => { for (let i = k - 1; i >= 0; i--) put(Math.floor(v / 2 ** i) & 1); };
+    const putUe = v => { const x = v + 1, len = Math.floor(Math.log2(x)); putBits(0, len); putBits(x, len + 1); };
+    for (let i = 0; i < copyUpTo; i++) put((rbsp[i >> 3] >> (7 - (i & 7))) & 1);
+    if (writeVuiFlag) {
+      put(1);                               // vui_parameters_present
+      // no aspect ratio, overscan, video signal, chroma location, timing, NAL HRD, VCL HRD, pic_struct
+      for (let i = 0; i < 8; i++) put(0);
+    }
+    put(1);                                 // bitstream_restriction_flag
+    put(1);                                 // motion_vectors_over_pic_boundaries
+    putUe(2); putUe(1); putUe(16); putUe(16);
+    putUe(0);                               // max_num_reorder_frames = 0  <- the point of all this
+    putUe(Math.max(1, refs));               // max_dec_frame_buffering
+    put(1); while (n) put(0);               // rbsp trailing bits
+
+    const res = [nal[0]];
+    let zeros = 0;
+    for (const b of out) {
+      if (zeros >= 2 && b <= 3) { res.push(3); zeros = 0; }
+      res.push(b);
+      zeros = b === 0 ? zeros + 1 : 0;
+    }
+    return new Uint8Array(res);
+  } catch (e) { return nal; }
+}
+
+// Applies it to an Annex-B buffer (start codes + NALs), returning a new buffer.
+function patchConfig(buf) {
+  const starts = [];
+  for (let i = 0; i + 3 < buf.length; i++) {
+    if (buf[i] === 0 && buf[i+1] === 0 && (buf[i+2] === 1 || (buf[i+2] === 0 && buf[i+3] === 1))) {
+      const len = buf[i+2] === 1 ? 3 : 4;
+      starts.push([i, i + len]);
+      i += len - 1;
+    }
+  }
+  if (!starts.length) return buf;
+  const parts = [];
+  for (let k = 0; k < starts.length; k++) {
+    const [s, d] = starts[k];
+    const end = k + 1 < starts.length ? starts[k+1][0] : buf.length;
+    let nal = buf.subarray(d, end);
+    if ((nal[0] & 0x1f) === 7) nal = lowLatencySps(nal);
+    parts.push(new Uint8Array([0, 0, 0, 1]), nal);
+  }
+  const total = parts.reduce((a, p) => a + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
 
 // ---------- audio: 48 kHz stereo PCM, played with a small (~60 ms) buffer ----------
 let actx = null, nextT = 0;
@@ -129,13 +250,15 @@ function onVideo(buf){
   const flags = dv.getUint8(0);
   const pts = Number(dv.getBigUint64(1));
   const data = new Uint8Array(buf, 9);
-  if (flags & 2) { cfg = data.slice(); return; }
+  if (flags & 2) { cfg = patchConfig(data.slice()); return; }   // tell the decoder: show frames right away
   const key = (flags & 1) !== 0;
   if (needKey && !key) return;
   if (!key && decoder.decodeQueueSize > 8) { needKey = true; send({ t:'sync' }); return; }   // badly behind: skip ahead
   let payload = data;
   if (key && cfg) { payload = new Uint8Array(cfg.length + data.length); payload.set(cfg, 0); payload.set(data, cfg.length); }
   needKey = false;
+  sentAt.set(pts, performance.now());
+  if (sentAt.size > 120) sentAt.delete(sentAt.keys().next().value);
   try { decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: pts, data: payload })); }
   catch (e) { needKey = true; send({ t:'sync' }); }
 }
@@ -250,7 +373,9 @@ const stats = { frames: 0, bytes: 0 };
 setInterval(() => {
   const el = $('stats');
   if (!el.classList.contains('hidden'))
-    el.textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbps · ${vw}×${vh} · queue ${decoder ? decoder.decodeQueueSize : 0}`;
+    el.textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbps · ${vw}×${vh}\n` +
+      `network ${Math.round(rtt)} ms round trip · decode ${Math.round(decAvg)} ms (${hwMode === 'prefer-hardware' ? 'hardware' : 'software'})`;
+  send({ t:'ping', ts: performance.now() });
   stats.frames = 0; stats.bytes = 0;
 }, 1000);
 

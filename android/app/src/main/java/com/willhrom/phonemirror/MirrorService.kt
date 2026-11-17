@@ -430,6 +430,7 @@ class MirrorService : Service() {
                         }
                     }
                     "sync" -> if (approved) { needKey = true; encoder?.requestKeyFrame() }
+                    "ping" -> sendText(JSONObject().put("t", "pong").put("ts", m.optDouble("ts")))
                     "quality" -> if (approved) {
                         // The laptop's phone window changed size: re-encode at a size that fits it.
                         val s = settings
