@@ -18,6 +18,9 @@ public class MainForm : Form
     static readonly Regex AddrRx = new(@"\d+\.\d+\.\d+\.\d+:\d+");
 
     readonly Settings cfg = Settings.Load();
+    bool locked;
+    int badTries;
+    DateTime lockoutUntil = DateTime.MinValue;
     readonly WebView2 web = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Bg };
     readonly NotifyIcon tray = new();
     readonly System.Windows.Forms.Timer poll = new() { Interval = 5000 };
@@ -51,6 +54,7 @@ public class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         if (Program.Background) Opacity = 0;
         Controls.Add(web);
+        locked = HasPin;   // with a PIN, the app always starts locked
 
         tray.Icon = Icon;
         tray.Text = "Phone Mirror";
@@ -206,6 +210,7 @@ public class MainForm : Form
         {
             e.Cancel = true;
             Hide();
+            Lock();
             if (!cfg.TrayTipShown)
             {
                 cfg.TrayTipShown = true;
@@ -292,6 +297,8 @@ public class MainForm : Form
             phones = PhonesView(),
             settings = cfg,
             update = updateVersion,
+            locked,
+            hasPin = HasPin,
             direct = new { allowed = cfg.AllowDirect, running = DirectLink.Running, error = DirectLink.Error, pc = Environment.MachineName },
             displayHz = DisplayHz(),
             busy = busyText == null ? null : new { text = busyText, pct = busyPct },
@@ -310,8 +317,15 @@ public class MainForm : Form
             string Id() => Str("id") ?? "";
             KnownPhone? Ph() => cfg.Phones.FirstOrDefault(p => p.Id == Id());
 
-            switch (Str("cmd"))
+            var cmd = Str("cmd");
+            // While locked, only the lock screen works.
+            if (locked && cmd is not ("ready" or "unlock")) return;
+            switch (cmd)
             {
+                case "unlock": Unlock(Str("pin") ?? ""); break;
+                case "lockNow": Lock(); break;
+                case "setPin": SetPin(Str("old") ?? "", Str("pin") ?? ""); break;
+                case "removePin": RemovePin(Str("old") ?? ""); break;
                 case "ready":
                     uiReady = true;
                     Post(new { type = "logHistory", items = logHistory.Select(l => new { time = l.Time, text = l.Text, level = l.Level }) });
@@ -378,6 +392,87 @@ public class MainForm : Form
             }
         }
         catch (Exception ex) { Log("Error: " + ex.Message, "error"); }
+    }
+
+    // ================= PIN lock =================
+
+    bool HasPin => cfg.PinHash != "" && cfg.PinSalt != "";
+
+    static string HashPin(string pin, string salt) => Convert.ToBase64String(
+        Rfc2898DeriveBytes.Pbkdf2(pin, Convert.FromBase64String(salt), 200_000, HashAlgorithmName.SHA256, 32));
+
+    bool PinMatches(string pin)
+    {
+        if (!HasPin) return true;
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(
+                Convert.FromBase64String(HashPin(pin, cfg.PinSalt)), Convert.FromBase64String(cfg.PinHash));
+        }
+        catch { return false; }
+    }
+
+    void Lock()
+    {
+        if (!HasPin || locked) return;
+        locked = true;
+        PushState();
+    }
+
+    void Unlock(string pin)
+    {
+        if (DateTime.Now < lockoutUntil)
+        {
+            Post(new { type = "lockError", text = $"Too many tries. Try again in {(int)(lockoutUntil - DateTime.Now).TotalSeconds + 1} s." });
+            return;
+        }
+        if (PinMatches(pin))
+        {
+            locked = false;
+            badTries = 0;
+            PushState();
+            return;
+        }
+        if (++badTries >= 5)
+        {
+            badTries = 0;
+            lockoutUntil = DateTime.Now.AddSeconds(30);
+            Post(new { type = "lockError", text = "Too many tries. Wait 30 seconds." });
+        }
+        else Post(new { type = "lockError", text = "That's not the right PIN." });
+    }
+
+    static bool ValidPin(string pin) => pin.Length is >= 4 and <= 8 && pin.All(char.IsDigit);
+
+    void SetPin(string old, string pin)
+    {
+        if (HasPin && !PinMatches(old)) { Toast("Your current PIN isn't right"); return; }
+        if (!ValidPin(pin)) { Toast("Use 4 to 8 digits"); return; }
+        var salt = RandomNumberGenerator.GetBytes(16);
+        cfg.PinSalt = Convert.ToBase64String(salt);
+        cfg.PinHash = HashPin(pin, cfg.PinSalt);
+        cfg.Save();
+        Toast("PIN set. Phone Mirror will ask for it when it opens.");
+        PushState();
+    }
+
+    void RemovePin(string old)
+    {
+        if (!PinMatches(old)) { Toast("That's not the right PIN"); return; }
+        cfg.PinHash = cfg.PinSalt = "";
+        cfg.Save();
+        Toast("PIN removed");
+        PushState();
+    }
+
+    /// <summary>Mirroring needs the app unlocked. Returns true (and asks for the PIN) if it's locked.</summary>
+    bool BlockedByLock()
+    {
+        if (!locked) return false;
+        ShowWindow();
+        if (!Visible) return true;
+        Toast("Enter your PIN to mirror");
+        return true;
     }
 
     void ApplySetting(string key, JsonElement value)
@@ -983,6 +1078,7 @@ public class MainForm : Form
 
     async Task StartAppMirror(KnownPhone ph)
     {
+        if (BlockedByLock()) return;
         if (appMirroring.Contains(ph.Id)) { Toast($"{ph.DisplayName} is already open"); return; }
         if (!AppOnline(ph) && !await Reconnect(ph)) return;
         if (WebEnv == null || !appPhones.TryGetValue(ph.Id, out var a)) return;
@@ -1074,6 +1170,7 @@ public class MainForm : Form
 
     void StartMirror(Device? target, bool forceH264 = false, bool forceBasic = false)
     {
+        if (BlockedByLock()) return;
         if (!engineReady || Tools.Scrcpy == null) { Toast("Still getting ready…"); return; }
         var d = target ?? DefaultDevice;
         if (d == null) { Toast("Plug in your phone first"); return; }

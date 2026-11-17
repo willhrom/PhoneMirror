@@ -39,6 +39,8 @@ import java.util.concurrent.TimeUnit
  * and passes the laptop's taps and keys to [ControlService].
  */
 class MirrorService : Service() {
+    @Volatile private var badCodes = 0
+    @Volatile private var codeLockUntil = 0L
 
     companion object {
         const val ACTION_IDLE = "com.willhrom.phonemirror.IDLE"
@@ -467,7 +469,13 @@ class MirrorService : Service() {
                         val pcId = m.optString("pcId")
                         val pcName = m.optString("pcName").ifBlank { "your laptop" }
                         val code = m.optString("code")
+                        val now = System.currentTimeMillis()
+                        if (!Prefs.isTrusted(this, pcId) && code.isNotEmpty() && now < codeLockUntil) {
+                            c.sendText(JSONObject().put("t", "error").put("text", "Too many wrong codes. Wait a minute, then try again.").toString())
+                            continue
+                        }
                         if (Prefs.isTrusted(this, pcId) || (code.isNotEmpty() && code == Prefs.code(this))) {
+                            badCodes = 0
                             Prefs.trust(this, pcId)
                             m.optJSONObject("direct")?.let {
                                 Prefs.saveLaptop(this, pcId, pcName, it.optString("ssid"), it.optString("pass"))
@@ -480,6 +488,7 @@ class MirrorService : Service() {
                                 m.optBoolean("audio", true))
                             attach(c, pcName)
                         } else {
+                            if (code.isNotEmpty() && ++badCodes >= 5) { badCodes = 0; codeLockUntil = now + 60_000 }
                             c.sendText(JSONObject().put("t", if (code.isEmpty()) "needCode" else "badCode").toString())
                         }
                     }

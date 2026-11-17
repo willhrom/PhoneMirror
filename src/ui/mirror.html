@@ -31,7 +31,7 @@
 <div class="overlay hidden" id="codeBox"><div class="box">
   <h3>Enter the pairing code</h3>
   <p>It's shown in the Phone Mirror app on your phone. You only need to do this once.</p>
-  <input id="code" maxlength="4" inputmode="numeric" autocomplete="off">
+  <input id="code" maxlength="6" inputmode="numeric" autocomplete="off">
   <div class="err" id="codeErr"></div>
   <button id="codeGo">Connect</button>
 </div></div>
@@ -410,7 +410,7 @@ canvas.addEventListener('keydown', e => {
 // ---------- code entry ----------
 $('codeGo').onclick = () => {
   const v = $('code').value.trim();
-  if (!/^\d{4}$/.test(v)) { $('codeErr').textContent = 'Enter the 4 digits shown on your phone.'; return; }
+  if (!/^\d{4,6}$/.test(v)) { $('codeErr').textContent = 'Enter the code shown on your phone.'; return; }
   $('codeErr').textContent = '';
   send({ t:'hello', pcId:P.pcId, pcName:P.pcName, code:v, maxSize:P.maxSize, bitrate:P.bitrate, fps:P.fps, audio:!!P.audio, direct:P.direct || null });
   waiting('Connecting…', '');

@@ -2,6 +2,10 @@ package com.willhrom.phonemirror
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.text.InputType
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -54,6 +58,17 @@ class MainActivity : Activity() {
     private lateinit var directCard: LinearLayout
     private lateinit var directText: TextView
     private lateinit var directButton: Button
+    private lateinit var lockView: LinearLayout
+    private lateinit var lockInput: EditText
+    private lateinit var lockErr: TextView
+    private lateinit var pinText: TextView
+    private lateinit var pinButtons: LinearLayout
+
+    // App PIN: the settings screen stays hidden until it's entered. Locks again when you leave the app.
+    private var unlocked = false
+    private var openingSystemScreen = false
+    private var badTries = 0
+    private var lockedUntil = 0L
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -87,8 +102,93 @@ class MainActivity : Activity() {
         refresh()
     }
 
+    override fun onStop() {
+        super.onStop()
+        if (!openingSystemScreen) unlocked = false
+    }
+
+    override fun startActivity(intent: Intent?) {
+        openingSystemScreen = true
+        super.startActivity(intent)
+    }
+
+    override fun startActivityForResult(intent: Intent?, requestCode: Int) {
+        openingSystemScreen = true
+        super.startActivityForResult(intent, requestCode)
+    }
+
+    private fun showLockIfNeeded() {
+        val locked = Prefs.hasPin(this) && !unlocked
+        lockView.visibility = if (locked) View.VISIBLE else View.GONE
+        if (locked) { lockInput.setText(""); lockInput.requestFocus() }
+    }
+
+    private fun tryUnlock() {
+        val pin = lockInput.text.toString()
+        if (pin.isEmpty()) return
+        val now = System.currentTimeMillis()
+        if (now < lockedUntil) { lockErr.text = "Too many tries. Wait ${(lockedUntil - now + 999) / 1000} s."; return }
+        lockInput.isEnabled = false
+        Thread {
+            val ok = Prefs.pinMatches(this, pin)
+            runOnUiThread {
+                lockInput.isEnabled = true
+                if (ok) {
+                    unlocked = true; badTries = 0; lockErr.text = ""
+                    (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                        .hideSoftInputFromWindow(lockInput.windowToken, 0)
+                    showLockIfNeeded(); refresh()
+                } else {
+                    lockInput.setText("")
+                    if (++badTries >= 5) { badTries = 0; lockedUntil = System.currentTimeMillis() + 30_000; lockErr.text = "Too many tries. Wait 30 s." }
+                    else lockErr.text = "Wrong PIN"
+                }
+            }
+        }.start()
+    }
+
+    private fun pinField(hint: String) = EditText(this).apply {
+        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        this.hint = hint
+        filters = arrayOf<android.text.InputFilter>(android.text.InputFilter.LengthFilter(8))
+    }
+
+    /** mode: "set", "change" or "remove" */
+    private fun pinDialog(mode: String) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(8), dp(22), 0) }
+        val old = pinField("Current PIN"); val a = pinField("New PIN (4 to 8 digits)"); val b = pinField("New PIN again")
+        if (mode != "set") box.addView(old)
+        if (mode != "remove") { box.addView(a); box.addView(b) }
+        val err = TextView(this).apply { setTextColor(Color.rgb(220, 80, 80)); textSize = 13f }
+        box.addView(err)
+        val dlg = AlertDialog.Builder(this)
+            .setTitle(when (mode) { "set" -> "Set a PIN"; "change" -> "Change your PIN"; else -> "Remove your PIN" })
+            .setView(box)
+            .setPositiveButton(if (mode == "remove") "Remove" else "Save", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val o = old.text.toString(); val n = a.text.toString(); val n2 = b.text.toString()
+                if (mode != "remove" && !Regex("^\\d{4,8}$").matches(n)) { err.text = "Use 4 to 8 digits."; return@setOnClickListener }
+                if (mode != "remove" && n != n2) { err.text = "The two PINs don't match."; return@setOnClickListener }
+                Thread {
+                    val ok = mode == "set" && !Prefs.hasPin(this) || Prefs.pinMatches(this, o)
+                    if (ok) Prefs.setPin(this, if (mode == "remove") null else n)
+                    runOnUiThread {
+                        if (!ok) err.text = "Current PIN is wrong."
+                        else { dlg.dismiss(); refresh() }
+                    }
+                }.start()
+            }
+        }
+        dlg.show()
+    }
+
     override fun onResume() {
         super.onResume()
+        openingSystemScreen = false
+        showLockIfNeeded()
         if (Prefs.background(this) && !MirrorService.running) {
             try { MirrorService.startIdle(this) } catch (_: Exception) { }
         }
@@ -150,7 +250,18 @@ class MainActivity : Activity() {
 
     // ---------------- state ----------------
 
+    private fun refreshPin() {
+        val has = Prefs.hasPin(this)
+        pinText.text = if (has) "On. Asks for your PIN each time you open the app" else "Off. Anyone holding your phone can change these settings"
+        pinButtons.removeAllViews()
+        if (has) {
+            pinButtons.addView(smallButton("Change PIN") { pinDialog("change") })
+            pinButtons.addView(smallButton("Remove PIN") { pinDialog("remove") })
+        } else pinButtons.addView(smallButton("Set a PIN") { pinDialog("set") })
+    }
+
     private fun refresh() {
+        refreshPin()
         val running = MirrorService.running
         val capturing = MirrorService.capturing
         val client = MirrorService.clientName
@@ -339,7 +450,7 @@ class MainActivity : Activity() {
         code.addView(label("PAIRING CODE", 12f, muted, bold = true))
         codeText = label("", 34f, fg, bold = true).apply { setPadding(0, dp(6), 0, 0); letterSpacing = 0.08f }
         code.addView(codeText)
-        code.addView(label("Type this on your laptop the first time it connects.", 13f, muted))
+        code.addView(label("Type this on your laptop the first time it connects. After 5 wrong tries the phone stops accepting codes for a minute.", 13f, muted))
         code.addView(smallButton("New code") { Prefs.newCode(this); refresh() })
         root.addView(code)
 
@@ -385,6 +496,15 @@ class MainActivity : Activity() {
         bgCard.addView(batteryButton)
         root.addView(bgCard)
 
+        // security
+        val secCard = cardView()
+        secCard.addView(label("SECURITY", 12f, muted, bold = true))
+        pinText = label("", 14f, muted).apply { setPadding(0, dp(6), 0, 0) }
+        secCard.addView(pinText)
+        pinButtons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        secCard.addView(pinButtons)
+        root.addView(secCard)
+
         // updates
         val upCard = cardView()
         upCard.addView(label("UPDATES", 12f, muted, bold = true))
@@ -400,9 +520,49 @@ class MainActivity : Activity() {
         root.addView(label("Your phone and laptop need to be on the same Wi-Fi. On the laptop, open Phone Mirror. " +
             "This phone shows up under My phones.", 13f, muted).apply { setPadding(dp(4), dp(18), dp(4), 0) })
 
-        setContentView(ScrollView(this).apply {
+        // lock screen
+        lockView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
             setBackgroundColor(bg)
-            addView(root)
+            setPadding(dp(40), 0, dp(40), dp(80))
+            isClickable = true
+            visibility = View.GONE
+        }
+        lockView.addView(ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher)
+            layoutParams = LinearLayout.LayoutParams(dp(64), dp(64)).apply { bottomMargin = dp(16) }
+        })
+        lockView.addView(label("Phone Mirror is locked", 20f, fg, bold = true).apply { gravity = Gravity.CENTER })
+        lockView.addView(label("Enter your PIN", 14f, muted).apply { gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(16)) })
+        lockInput = pinField("").apply {
+            gravity = Gravity.CENTER
+            textSize = 26f
+            letterSpacing = 0.3f
+            setTextColor(fg)
+            background = rounded(card, 14, line)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            setOnEditorActionListener { _, _, _ -> tryUnlock(); true }
+        }
+        lockView.addView(lockInput)
+        lockErr = label("", 13f, Color.rgb(252, 165, 165)).apply { gravity = Gravity.CENTER; setPadding(0, dp(10), 0, dp(6)) }
+        lockView.addView(lockErr)
+        lockView.addView(Button(this).apply {
+            text = "Unlock"; isAllCaps = false; textSize = 16f; setTextColor(Color.WHITE)
+            background = gradient()
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52))
+            setOnClickListener { tryUnlock() }
+        })
+
+        setContentView(FrameLayout(this).apply {
+            setBackgroundColor(bg)
+            addView(ScrollView(this@MainActivity).apply {
+                setBackgroundColor(bg)
+                addView(root)
+            })
+            addView(lockView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         })
     }
 }

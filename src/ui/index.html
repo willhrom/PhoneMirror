@@ -168,6 +168,16 @@ table.sc{width:100%;border-collapse:collapse;margin-top:6px}
 table.sc td{padding:7px 0;border-top:1px solid var(--line);color:var(--muted)}
 table.sc td:last-child{text-align:right}
 
+/* lock screen */
+.lock{position:fixed;inset:0;z-index:50;background:radial-gradient(800px 400px at 50% 0%,#151b2e,var(--bg));display:grid;place-items:center}
+.lockbox{width:300px;text-align:center}
+.lockbox h3{margin:0 0 4px;font-size:20px}
+.lockbox input{width:100%;box-sizing:border-box;text-align:center;font-size:24px;letter-spacing:10px;padding:12px;border-radius:12px;border:1px solid var(--line2);background:var(--s1);outline:none;-webkit-user-select:text;user-select:text}
+.lockbox input:focus{border-color:var(--accent);box-shadow:0 0 0 3px #4f8cff2a}
+.lockbox .err{color:#fca5a5;font-size:12.5px;min-height:20px;margin:8px 0 4px}
+.shake{animation:shake .3s}
+@keyframes shake{25%{transform:translateX(-6px)}50%{transform:translateX(6px)}75%{transform:translateX(-3px)}}
+
 /* busy + toast */
 .busy{position:fixed;inset:0;background:#07080ce6;display:grid;place-items:center;z-index:20}
 .busy .box{width:360px;text-align:center}
@@ -190,6 +200,7 @@ table.sc td:last-child{text-align:right}
     <div class="top-actions">
       <div class="pill update hidden" id="updatePill"><span id="updateText"></span><button onclick="post('applyUpdate')">Update</button></div>
       <span class="pill" id="enginePill"><span class="dot"></span><span>Starting…</span></span>
+      <button class="ghost hidden" id="lockBtn" onclick="post('lockNow')" title="Lock Phone Mirror"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Lock</button>
       <button class="ghost" onclick="openModal('help')"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.4"/><path d="M12 16.8h.01"/></svg>Help</button>
     </div>
   </header>
@@ -259,6 +270,11 @@ table.sc td:last-child{text-align:right}
         <label class="row"><div><div class="t">Always on top</div><div class="d">Float above other windows</div></div><span class="sw"><input type="checkbox" data-key="alwaysOnTop"><span></span></span></label>
         <label class="row"><div><div class="t">Full screen</div><div class="d">Uses the plain look</div></div><span class="sw"><input type="checkbox" data-key="fullscreen"><span></span></span></label>
         <label class="row"><div><div class="t">Record to video</div><div class="d">Saved to Videos › Phone Mirror</div></div><span class="sw"><input type="checkbox" data-key="record"><span></span></span></label>
+      </div>
+      <div class="card">
+        <div class="ct">Security</div>
+        <div class="row" style="cursor:default"><div><div class="t">App PIN</div><div class="d" id="pinNote">Ask for a PIN when Phone Mirror opens</div></div></div>
+        <div class="files" id="pinBtns"></div>
       </div>
       <div class="card">
         <div class="ct">Files</div>
@@ -396,6 +412,31 @@ table.sc td:last-child{text-align:right}
   </div>
 </div>
 
+<!-- Lock screen -->
+<div class="lock hidden" id="lock">
+  <div class="lockbox">
+    <div class="logo" style="margin:0 auto 18px;width:56px;height:56px;border-radius:16px"><svg class="i" viewBox="0 0 24 24" style="width:28px;height:28px"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
+    <h3>Phone Mirror is locked</h3>
+    <p class="lead">Enter your PIN</p>
+    <input id="lockPin" type="password" inputmode="numeric" maxlength="8" autocomplete="off">
+    <div class="err" id="lockErr"></div>
+    <button class="primary" style="width:100%;justify-content:center;margin-top:6px" onclick="tryUnlock()">Unlock</button>
+  </div>
+</div>
+
+<!-- PIN modal -->
+<div class="back hidden" id="m-pin" data-close>
+  <div class="modal">
+    <h3 id="pinTitle">Set a PIN</h3>
+    <p class="lead" id="pinLead">4 to 8 digits. Only you know it: it's never stored, only a scrambled check of it.</p>
+    <div class="field" id="pinOldRow"><label>Current PIN</label><input id="pinOld" type="password" inputmode="numeric" maxlength="8" autocomplete="off"></div>
+    <div class="field" id="pinNewRow"><label>New PIN</label><input id="pinNew" type="password" inputmode="numeric" maxlength="8" autocomplete="off"></div>
+    <div class="field" id="pinNew2Row"><label>New PIN again</label><input id="pinNew2" type="password" inputmode="numeric" maxlength="8" autocomplete="off"></div>
+    <div class="err" id="pinErr" style="color:#fca5a5;font-size:12.5px;min-height:16px"></div>
+    <div class="mfoot"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" id="pinGo" onclick="submitPin()">Save</button></div>
+  </div>
+</div>
+
 <div class="busy hidden" id="busy"><div class="box">
   <div class="logo" style="margin:0 auto;width:52px;height:52px;border-radius:15px"><svg class="i" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18h2"/></svg></div>
   <div class="t" id="busyText">Getting things ready…</div><div class="d">This only happens once.</div>
@@ -491,6 +532,16 @@ function render(){
   document.querySelectorAll('#strip button').forEach(b => b.classList.toggle('on', b.dataset.strip === S.settings.buttonStrip));
   $('strip').style.opacity = S.settings.frameStyle === 'Off' ? .4 : 1;
 
+  // lock
+  const wasLocked = !$('lock').classList.contains('hidden');
+  $('lock').classList.toggle('hidden', !S.locked);
+  if (S.locked && !wasLocked) { closeModal(); $('lockPin').value = ''; $('lockErr').textContent = ''; setTimeout(() => $('lockPin').focus(), 50); }
+  $('lockBtn').classList.toggle('hidden', !S.hasPin);
+  $('pinNote').textContent = S.hasPin ? 'On. Asks when it opens and after it’s hidden in the tray' : 'Off. Ask for a PIN when Phone Mirror opens';
+  $('pinBtns').innerHTML = S.hasPin
+    ? `<button class="ghost" onclick="openPin('change')">Change PIN</button><button class="ghost" onclick="openPin('remove')">Remove PIN</button>`
+    : `<button class="ghost" onclick="openPin('set')">Set a PIN</button>`;
+
   // direct link
   const dn = $('directNote'), d = S.direct || {};
   dn.style.color = d.error && d.allowed ? 'var(--warn)' : '';
@@ -543,6 +594,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && openId === 'ip') submitIp();
   if (e.key === 'Enter' && openId === 'code') submitCode();
   if (e.key === 'Enter' && openId === 'phone') savePhone();
+  if (e.key === 'Enter' && openId === 'pin') submitPin();
 });
 function submitIp(){ const v = $('ipAddr').value.trim(); if (!v) return $('ipAddr').focus(); post('connectIp', {ip: v}); closeModal(); }
 function submitCode(){
@@ -587,6 +639,37 @@ function forgetPhone(){
   post('forget', {id: phId}); closeModal();
 }
 
+function tryUnlock(){
+  const v = $('lockPin').value.trim();
+  if (!v) return $('lockPin').focus();
+  post('unlock', { pin: v });
+  $('lockPin').value = '';
+}
+$('lockPin').addEventListener('keydown', e => { if (e.key === 'Enter') tryUnlock(); });
+
+let pinMode = 'set';
+function openPin(mode){
+  pinMode = mode;
+  openModal('pin');
+  ['pinOld','pinNew','pinNew2'].forEach(id => $(id).value = '');
+  $('pinErr').textContent = '';
+  $('pinTitle').textContent = mode === 'set' ? 'Set a PIN' : mode === 'change' ? 'Change your PIN' : 'Remove your PIN';
+  $('pinOldRow').classList.toggle('hidden', mode === 'set');
+  $('pinNewRow').classList.toggle('hidden', mode === 'remove');
+  $('pinNew2Row').classList.toggle('hidden', mode === 'remove');
+  $('pinGo').textContent = mode === 'remove' ? 'Remove' : 'Save';
+  setTimeout(() => $(mode === 'set' ? 'pinNew' : 'pinOld').focus(), 50);
+}
+function submitPin(){
+  const old = $('pinOld').value.trim(), a = $('pinNew').value.trim(), b = $('pinNew2').value.trim();
+  if (pinMode !== 'set' && !old) { $('pinErr').textContent = 'Enter your current PIN.'; return; }
+  if (pinMode === 'remove') { post('removePin', { old }); closeModal(); return; }
+  if (!/^\d{4,8}$/.test(a)) { $('pinErr').textContent = 'Use 4 to 8 digits.'; return; }
+  if (a !== b) { $('pinErr').textContent = 'The two PINs don\u2019t match.'; return; }
+  post('setPin', { old, pin: a });
+  closeModal();
+}
+
 let toastTimer;
 function toast(t){ const el = $('toast'); el.textContent = t; el.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add('hidden'), 2600); }
 
@@ -598,6 +681,7 @@ function handle(m){
     case 'qr': if (openId === 'qr') { $('qrImg').src = m.image; setQrStatus('Waiting for your phone…', 'wait'); } break;
     case 'qrStatus': if (openId === 'qr') { setQrStatus(m.text, m.level); if (m.done) setTimeout(() => { if (openId === 'qr') closeModal(); }, 1400); } break;
     case 'toast': toast(m.text); break;
+    case 'lockError': $('lockErr').textContent = m.text; const lb = document.querySelector('.lockbox'); lb.classList.remove('shake'); void lb.offsetWidth; lb.classList.add('shake'); $('lockPin').focus(); break;
     case 'appQr': $('appQrImg').src = m.image; $('appUrl').textContent = 'willhrom.github.io/PhoneMirror'; break;
     case 'open': openModal(m.name); break;
   }

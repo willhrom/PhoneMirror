@@ -52,6 +52,9 @@ class Settings
     public string PcId { get; set; } = "";
     /// <summary>Let phone-app phones link straight to this laptop over Wi-Fi Direct (no shared Wi-Fi needed).</summary>
     public bool AllowDirect { get; set; } = true;
+    /// <summary>Optional app PIN: only a salted PBKDF2 hash is stored, never the PIN.</summary>
+    public string PinHash { get; set; } = "";
+    public string PinSalt { get; set; } = "";
     public string DirectPass { get; set; } = "";
 
     static string FilePath => Path.Combine(Tools.AppDir, "settings.json");

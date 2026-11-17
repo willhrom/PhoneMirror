@@ -38,6 +38,7 @@ class PhoneFrameForm : Form
     int ScreenRadiusFor(Size screen) => Math.Max(6, OuterRadiusFor(screen) - BezelFor(screen.Width));
     int OuterRadius => OuterRadiusFor(screenSize);
     Size regionSize;
+    bool resizing;
     int PhoneW => screenSize.Width + 2 * Bezel;
     int PhoneH => screenSize.Height + 2 * Bezel;
     Rectangle ScreenRect => new(Bezel, Bezel, screenSize.Width, screenSize.Height);
@@ -327,7 +328,8 @@ class PhoneFrameForm : Form
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        if (layingOut || WindowState == FormWindowState.Minimized) return;
+        // While the user drags a corner, WM_SIZING has already drawn and placed everything for this size.
+        if (layingOut || resizing || WindowState == FormWindowState.Minimized) return;
         int sw = ClientSize.Width - 2 * Bezel;
         if (sw > 0 && sw != screenSize.Width)
             screenSize = new Size(sw, (int)Math.Round(sw / aspect));
@@ -369,7 +371,7 @@ class PhoneFrameForm : Form
 
     protected override void WndProc(ref Message m)
     {
-        const int WM_NCHITTEST = 0x84, WM_SIZING = 0x214, WM_MOVING = 0x216, WM_EXITSIZEMOVE = 0x232;
+        const int WM_NCHITTEST = 0x84, WM_SIZING = 0x214, WM_MOVING = 0x216, WM_ENTERSIZEMOVE = 0x231, WM_EXITSIZEMOVE = 0x232;
         const int HTCAPTION = 2, HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
         switch (m.Msg)
         {
@@ -391,29 +393,42 @@ class PhoneFrameForm : Form
                 base.WndProc(ref m);
                 return;
             }
+            case WM_ENTERSIZEMOVE:
+                resizing = false;
+                break;
             case WM_SIZING:
             {
+                // Keep the opposite corner fixed and scale the phone along its own diagonal, so the
+                // size follows the cursor smoothly whichever way it moves (no width/height flip-flopping).
+                resizing = true;
                 int edge = m.WParam.ToInt32();
                 var rc = Marshal.PtrToStructure<RECT>(m.LParam);
-                var wa = Screen.FromControl(this).WorkingArea;
-                int b = Bezel;
-                int sw = rc.Right - rc.Left - 2 * b, sh = rc.Bottom - rc.Top - 2 * b;
-                bool byHeight = Math.Abs(sh - screenSize.Height) * aspect > Math.Abs(sw - screenSize.Width);
-                var s = byHeight ? new Size((int)Math.Round(sh * aspect), sh) : new Size(sw, (int)Math.Round(sw / aspect));
-                s = SizeForLong(Math.Clamp(Math.Max(s.Width, s.Height), MinLong, MaxLong(wa) + 200));
-                int nb = BezelFor(s.Width);
-                int w = s.Width + 2 * nb, h = s.Height + 2 * nb;
+                var wa = Screen.FromRectangle(new Rectangle(rc.Left, rc.Top, 1, 1)).WorkingArea;
                 bool fromLeft = edge is 1 or 4 or 7, fromTop = edge is 3 or 4 or 5;
-                if (fromLeft) rc.Left = rc.Right - w; else rc.Right = rc.Left + w;
-                if (fromTop) rc.Top = rc.Bottom - h; else rc.Bottom = rc.Top + h;
+                int ax = fromLeft ? Right : Left, ay = fromTop ? Bottom : Top;   // fixed corner (screen coords)
+                int b0 = Bezel;
+                double sw = Math.Abs((fromLeft ? rc.Left : rc.Right) - ax) - 2 * b0;
+                double sh = Math.Abs((fromTop ? rc.Top : rc.Bottom) - ay) - 2 * b0;
+                double k = (sw * aspect + sh) / (aspect * aspect + 1);           // projection onto (aspect, 1)
+                int lng = (int)Math.Round(aspect < 1 ? k : k * aspect);
+                var sz = SizeForLong(Math.Clamp(lng, MinLong, MaxLong(wa) + 200));
+                int nb = BezelFor(sz.Width);
+                int w = sz.Width + 2 * nb, h = sz.Height + 2 * nb;
+                rc.Left = fromLeft ? ax - w : ax; rc.Right = rc.Left + w;
+                rc.Top = fromTop ? ay - h : ay; rc.Bottom = rc.Top + h;
                 Marshal.StructureToPtr(rc, m.LParam, false);
-                Render(new Point(rc.Left, rc.Top), s);
-                PlaceAll(new Rectangle(rc.Left, rc.Top, w, h), s);
+                if (sz != screenSize)
+                {
+                    screenSize = sz;
+                    Render(new Point(rc.Left, rc.Top), sz);
+                    PlaceAll(new Rectangle(rc.Left, rc.Top, w, h), sz);
+                }
                 m.Result = (IntPtr)1;
                 return;
             }
             case WM_EXITSIZEMOVE:
                 base.WndProc(ref m);
+                if (resizing) { resizing = false; ApplyShape(); }
                 PlaceAll(Bounds);
                 SaveWindow?.Invoke(LongSide, Location);
                 return;

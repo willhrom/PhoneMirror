@@ -4,6 +4,10 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import org.json.JSONObject
+import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
 /** Small settings store: pairing code, trusted laptops, background options. */
 object Prefs {
@@ -11,12 +15,21 @@ object Prefs {
 
     fun code(c: Context): String {
         val s = sp(c)
-        return s.getString("code", null) ?: newCode(c)
+        val v = s.getString("code", null)
+        if (v == null || v.length < 6) {
+            // Older 4-digit codes are too easy to guess: switch to 6 digits, keeping laptops already paired.
+            val n = random6()
+            s.edit().putString("code", n).apply()
+            return n
+        }
+        return v
     }
+
+    private fun random6() = (100000 + SecureRandom().nextInt(900000)).toString()
 
     /** New pairing code; laptops have to enter the new code once. */
     fun newCode(c: Context): String {
-        val v = (1000..9999).random().toString()
+        val v = random6()
         sp(c).edit().putString("code", v).putStringSet("trusted", emptySet()).apply()
         return v
     }
@@ -62,6 +75,30 @@ object Prefs {
             if (l.ssid.isNotEmpty() && (best == null || l.time > best.time)) best = l
         }
         return best
+    }
+
+    // ---- App PIN (only a salted, slow hash is kept; the PIN itself is never stored) ----
+
+    fun hasPin(c: Context) = !sp(c).getString("pinHash", null).isNullOrEmpty()
+
+    private fun hash(pin: String, salt: ByteArray): ByteArray =
+        SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            .generateSecret(PBEKeySpec(pin.toCharArray(), salt, 60_000, 256)).encoded
+
+    fun pinMatches(c: Context, pin: String): Boolean {
+        val s = sp(c)
+        val h = s.getString("pinHash", null) ?: return true
+        val salt = android.util.Base64.decode(s.getString("pinSalt", "") ?: "", android.util.Base64.NO_WRAP)
+        return MessageDigest.isEqual(hash(pin, salt), android.util.Base64.decode(h, android.util.Base64.NO_WRAP))
+    }
+
+    fun setPin(c: Context, pin: String?) {
+        if (pin.isNullOrEmpty()) { sp(c).edit().remove("pinHash").remove("pinSalt").apply(); return }
+        val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        sp(c).edit()
+            .putString("pinSalt", android.util.Base64.encodeToString(salt, android.util.Base64.NO_WRAP))
+            .putString("pinHash", android.util.Base64.encodeToString(hash(pin, salt), android.util.Base64.NO_WRAP))
+            .apply()
     }
 
     fun deviceId(c: Context): String =
