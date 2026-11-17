@@ -128,7 +128,7 @@ class PhoneFrameForm : Form
         ex = (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW;
         SetWindowLongPtr(child, GWL_EXSTYLE, (IntPtr)ex);
         SetWindowLongPtr(child, GWLP_HWNDPARENT, Handle);
-        PlaceAll(Bounds);
+        PlaceAll(RealBounds);
         ShowWindow(child, SW_SHOW);
         SetForegroundWindow(child);
         watch.Start();
@@ -144,6 +144,9 @@ class PhoneFrameForm : Form
 
     /// <summary>Places the video window and the dock for a frame at <paramref name="frame"/> (screen coords).</summary>
     void PlaceAll(Rectangle frame) => PlaceAll(frame, screenSize);
+
+    /// <summary>Where the frame really is on screen (WinForms' cached Bounds can lag behind a layered window).</summary>
+    Rectangle RealBounds => GetWindowRect(Handle, out var r) ? new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top) : Bounds;
 
     void PlaceAll(Rectangle frame, Size screen)
     {
@@ -189,10 +192,12 @@ class PhoneFrameForm : Form
         if (!GetWindowRect(child, out var r)) return;
         int cw = r.Right - r.Left, ch = r.Bottom - r.Top;
         if (cw <= 0 || ch <= 0) return;
-        if (cw == screenSize.Width && ch == screenSize.Height && r.Left == Left + Bezel && r.Top == Top + Bezel) return;
+        var f = RealBounds;
+        if (cw == screenSize.Width && ch == screenSize.Height && r.Left == f.Left + Bezel && r.Top == f.Top + Bezel) return;
 
+        // The picture changed shape (phone rotated, or the phone app reported its real screen size): follow it.
         double a = (double)cw / ch;
-        if ((a > 1) != (aspect > 1))
+        if (Math.Abs(a - aspect) > 0.015)
         {
             int keep = LongSide;
             aspect = a;
@@ -201,7 +206,7 @@ class PhoneFrameForm : Form
             SetScreenSize(SizeForLong(Math.Clamp(keep, MinLong, MaxLong(wa))));
             Location = ClampTo(wa, new Point(center.X - Width / 2, center.Y - Height / 2));
         }
-        PlaceAll(Bounds);
+        PlaceAll(RealBounds);
     }
 
     Point ClampTo(Rectangle wa, Point p) => new(
@@ -216,7 +221,7 @@ class PhoneFrameForm : Form
         var center = new Point(Left + Width / 2, Top + Height / 2);
         SetScreenSize(SizeForLong(target));
         Location = ClampTo(wa, new Point(center.X - Width / 2, center.Y - Height / 2));
-        PlaceAll(Bounds);
+        PlaceAll(RealBounds);
         SaveWindow?.Invoke(LongSide, Location);
     }
 
@@ -334,13 +339,13 @@ class PhoneFrameForm : Form
         if (sw > 0 && sw != screenSize.Width)
             screenSize = new Size(sw, (int)Math.Round(sw / aspect));
         ApplyShape();
-        PlaceAll(Bounds);
+        PlaceAll(RealBounds);
     }
 
     protected override void OnActivated(EventArgs e)
     {
         base.OnActivated(e);
-        PlaceAll(Bounds);
+        PlaceAll(RealBounds);
     }
 
     static GraphicsPath RoundRect(RectangleF r, float radius)
@@ -429,7 +434,7 @@ class PhoneFrameForm : Form
             case WM_EXITSIZEMOVE:
                 base.WndProc(ref m);
                 if (resizing) { resizing = false; ApplyShape(); }
-                PlaceAll(Bounds);
+                PlaceAll(RealBounds);
                 SaveWindow?.Invoke(LongSide, Location);
                 return;
         }
@@ -451,7 +456,7 @@ class PhoneFrameForm : Form
         if (child != IntPtr.Zero)
             SetWindowPos(child, TopMost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         dock.SetPinned(TopMost);
-        PlaceAll(Bounds);
+        PlaceAll(RealBounds);
     }
 
     // ================= closing =================

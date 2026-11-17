@@ -54,7 +54,9 @@ class ControlService : AccessibilityService() {
         main.post {
             try {
                 when (m.optString("t")) {
-                    "down" -> down(point(m))
+                    // Newer laptops decide taps themselves: "tap" is a click, "down" with now=true is a real hold/drag.
+                    "tap" -> { main.removeCallbacks(startHeld); downAt = null; tap(point(m)) }
+                    "down" -> if (m.optBoolean("now")) { main.removeCallbacks(startHeld); downAt = null; beginStroke(point(m)) } else down(point(m))
                     "move" -> move(point(m))
                     "up" -> up()
                     "scroll" -> scroll(point(m), m.optDouble("dy", 0.0).toFloat())

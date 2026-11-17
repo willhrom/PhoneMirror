@@ -542,7 +542,7 @@ class MirrorService : Service() {
         if (old != null && old !== c) old.close()
         queue.clear()
         Thread({ writerLoop(c) }, "pm-writer").start()
-        sendText(JSONObject().put("t", "ok").put("control", ControlService.instance != null)
+        sendText(JSONObject().put("t", "ok").put("taps", true).put("control", ControlService.instance != null)
             .put("name", Prefs.deviceName(this)).put("sharing", capturing)
             .put("version", AppUpdater.installedVersion(this))
             .put("audio", settings.audio && AudioCapture.supported() &&
