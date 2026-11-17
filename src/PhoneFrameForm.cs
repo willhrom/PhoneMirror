@@ -445,6 +445,24 @@ class PhoneFrameForm : Form
 
     // ================= closing =================
 
+    /// <summary>Releases the video window so it no longer depends on this frame.</summary>
+    public void Detach(bool closeMirror = false)
+    {
+        if (child == IntPtr.Zero) return;
+        watch.Stop();
+        hoverTimer.Stop();
+        try { SetWindowLongPtr(child, GWLP_HWNDPARENT, IntPtr.Zero); } catch { }
+        if (closeMirror) PostMessage(child, 0x0010 /* WM_CLOSE: scrcpy quits cleanly, saving recordings */, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    /// <summary>Closes the frame without waiting for the mirror (used when the app quits).</summary>
+    public void ForceClose()
+    {
+        Detach();
+        processExited = true;
+        if (!IsDisposed) Close();
+    }
+
     public void ProcessExited()
     {
         processExited = true;

@@ -112,6 +112,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px;
 .sw input:checked+span::after{left:21px;background:#fff}
 .seg{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;background:var(--bg);border:1px solid var(--line);border-radius:11px;padding:4px;margin:10px 0 12px}
 .seg5{grid-template-columns:repeat(5,1fr)}.seg6{grid-template-columns:repeat(6,1fr)}
+.seg4{grid-template-columns:repeat(4,1fr);margin-top:0}
 .seg3{grid-template-columns:repeat(3,1fr);margin-top:0}
 .seg button{border:0;background:transparent;border-radius:8px;padding:7px 0;color:var(--muted);font-size:12.5px}
 .seg button.on{background:var(--s3);color:var(--text);box-shadow:0 1px 0 #ffffff10 inset}
@@ -235,6 +236,10 @@ table.sc td:last-child{text-align:right}
         <div class="ct">Quality</div>
         <div class="seg" id="seg">
           <button data-size="-1">Auto</button><button data-size="0">Max</button><button data-size="1920">Sharp</button><button data-size="1280">Smooth</button><button data-size="800">Light</button>
+        </div>
+        <div class="row" style="cursor:default;border-top:0;padding-top:0"><div><div class="t">Frame rate</div><div class="d" id="fpsNote">Auto matches your screen</div></div></div>
+        <div class="seg seg4" id="fps">
+          <button data-fps="0">Auto</button><button data-fps="60">60</button><button data-fps="90">90</button><button data-fps="120">120</button>
         </div>
       </div>
       <div class="card">
@@ -450,6 +455,8 @@ function render(){
   // settings
   document.querySelectorAll('input[data-key]').forEach(i => i.checked = !!S.settings[i.dataset.key]);
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', +b.dataset.size === S.settings.maxSize));
+  document.querySelectorAll('#fps button').forEach(b => b.classList.toggle('on', +b.dataset.fps === (S.settings.frameRate || 0)));
+  if (S.displayHz) $('fpsNote').textContent = `Auto matches your screen (${S.displayHz} Hz)`;
   document.querySelectorAll('.look').forEach(b => b.classList.toggle('on', b.dataset.look === S.settings.frameStyle));
   document.querySelectorAll('#strip button').forEach(b => b.classList.toggle('on', b.dataset.strip === S.settings.buttonStrip));
   $('strip').style.opacity = S.settings.frameStyle === 'Off' ? .4 : 1;
@@ -461,6 +468,7 @@ function render(){
 
 document.querySelectorAll('input[data-key]').forEach(i => i.addEventListener('change', () => post('setting', {key: i.dataset.key, value: i.checked})));
 document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => post('setting', {key:'maxSize', value: +b.dataset.size})));
+document.querySelectorAll('#fps button').forEach(b => b.addEventListener('click', () => post('setting', {key:'frameRate', value: +b.dataset.fps})));
 document.querySelectorAll('.look').forEach(b => b.addEventListener('click', () => post('setting', {key:'frameStyle', value: b.dataset.look})));
 document.querySelectorAll('#strip button').forEach(b => b.addEventListener('click', () => post('setting', {key:'buttonStrip', value: b.dataset.strip})));
 
@@ -557,8 +565,8 @@ function handle(m){
 if (wv) { wv.addEventListener('message', e => handle(e.data)); post('ready'); }
 else {
   // Preview data (when opened outside the app)
-  handle({type:'state', version:'1.0.5', engine:{ready:true}, update:null, busy:null,
-    settings:{autoMirror:true,autoWifi:true,startWithWindows:false,audio:true,screenOff:false,stayAwake:true,alwaysOnTop:false,fullscreen:false,record:false,maxSize:-1,frameStyle:'Black',buttonStrip:'hover',lastIp:'192.168.1.20'},
+  handle({type:'state', version:'1.0.11', displayHz:120, engine:{ready:true}, update:null, busy:null,
+    settings:{autoMirror:true,autoWifi:true,startWithWindows:false,audio:true,screenOff:false,stayAwake:true,alwaysOnTop:false,fullscreen:false,record:false,maxSize:-1,frameRate:0,frameStyle:'Black',buttonStrip:'hover',lastIp:'192.168.1.20'},
     phones: location.hash === '#empty' ? [] : [
       {id:'abc',name:'Will’s Pixel',nickname:'Will’s Pixel',model:'Pixel 8',saved:true,online:true,status:'ready',usb:true,wifi:true,mirroring:true,lastSeen:'today at 4:20 PM',lastIp:'192.168.1.20',look:'',quality:null,customWindow:true},
       {id:'xyz',name:'Galaxy S23',nickname:'',model:'Galaxy S23',saved:false,online:false,status:'unauthorized',usb:false,wifi:false,mirroring:false,lastSeen:'',lastIp:'',look:'',quality:null},

@@ -195,12 +195,43 @@ public class MainForm : Form
             }
             return;
         }
+        List<(Process Proc, PhoneFrameForm? Frame)> open;
+        lock (active) open = active.Where(a => { try { return !a.Proc.HasExited; } catch { return false; } }).ToList();
+        if (!shutdownDone && open.Count > 0)
+        {
+            // Close the phone windows first (cleanly, so recordings are saved), then quit.
+            e.Cancel = true;
+            Hide();
+            _ = ShutdownMirrorsThenQuit(open);
+            return;
+        }
         closing = true;
         poll.Stop();
         qrCts?.Cancel();
         try { tracker?.Kill(); } catch { }
         tray.Visible = false;
         base.OnFormClosing(e);
+    }
+
+    async Task ShutdownMirrorsThenQuit(List<(Process Proc, PhoneFrameForm? Frame)> open)
+    {
+        closing = true;                                        // stop reacting to mirrors as they exit
+        poll.Stop();
+        foreach (var (proc, frame) in open)
+        {
+            if (frame != null) frame.Detach(closeMirror: true); // hand back the video window and ask scrcpy to quit
+            else try { proc.CloseMainWindow(); } catch { }      // plain window: same, via its main window
+        }
+        var all = Task.WhenAll(open.Select(o => o.Proc.WaitForExitAsync()));
+        await Task.WhenAny(all, Task.Delay(2500));
+        foreach (var (proc, frame) in open)
+        {
+            try { if (!proc.HasExited) proc.Kill(true); } catch { }
+            try { frame?.ForceClose(); } catch { }
+        }
+        shutdownDone = true;
+        reallyQuit = true;
+        Close();
     }
 
     void ShowWindow()
@@ -230,6 +261,7 @@ public class MainForm : Form
             phones = PhonesView(),
             settings = cfg,
             update = updateVersion,
+            displayHz = DisplayHz(),
             busy = busyText == null ? null : new { text = busyText, pct = busyPct },
         });
     }
@@ -319,6 +351,7 @@ public class MainForm : Form
             case "fullscreen": cfg.Fullscreen = B(); break;
             case "record": cfg.Record = B(); break;
             case "maxSize": cfg.MaxSize = value.GetInt32(); break;
+            case "frameRate": cfg.FrameRate = value.GetInt32(); break;
             case "frameStyle": cfg.FrameStyle = value.GetString() ?? "Black"; break;
             case "buttonStrip": cfg.ButtonStrip = value.GetString() ?? "hover"; break;
         }
@@ -667,6 +700,8 @@ public class MainForm : Form
     // ================= mirroring =================
 
     readonly HashSet<string> noH265 = new();
+    readonly List<(Process Proc, PhoneFrameForm? Frame)> active = new();
+    bool shutdownDone;
 
     void StartMirror(Device? target, bool forceH264 = false)
     {
@@ -683,16 +718,22 @@ public class MainForm : Form
 
         var phone = PhoneFor(d);
         string look = string.IsNullOrEmpty(phone?.Look) ? cfg.FrameStyle : phone!.Look;
+        // H.265 needs about half the bandwidth of H.264 for the same picture: smoother over Wi-Fi.
+        bool h265 = d.Wireless && !forceH264 && !(phone?.NoH265 ?? false) && !noH265.Contains(KeyOf(d));
+
+        // Frame rate: match the laptop's display (Auto), or the user's choice.
+        int hz = DisplayHz();
+        int fps = cfg.FrameRate > 0 ? cfg.FrameRate : d.Wireless ? Math.Clamp(hz, 60, 120) : Math.Clamp(hz, 60, 144);
+        bool fast = fps > 60;
+
         int size = phone?.Quality ?? cfg.MaxSize;
-        string bitrate = d.Wireless ? "6M" : "8M";
+        string bitrate;
         if (size < 0)
         {
             size = d.Wireless ? 1280 : 1920;
-            bitrate = d.Wireless ? "4M" : "16M";
+            bitrate = d.Wireless ? (h265 ? (fast ? "8M" : "5M") : (fast ? "12M" : "8M")) : (fast ? "24M" : "16M");
         }
-
-        // H.265 needs about half the bandwidth of H.264 for the same picture: smoother over Wi-Fi.
-        bool h265 = d.Wireless && !forceH264 && !(phone?.NoH265 ?? false) && !noH265.Contains(KeyOf(d));
+        else bitrate = d.Wireless ? (h265 ? (fast ? "10M" : "6M") : (fast ? "14M" : "8M")) : (fast ? "24M" : "16M");
 
         var args = new List<string>
         {
@@ -700,7 +741,7 @@ public class MainForm : Form
             $"--video-codec={(h265 ? "h265" : "h264")}",
             $"--window-title={phone?.DisplayName ?? d.Model} — Phone Mirror",
             $"--video-bit-rate={bitrate}",
-            $"--max-fps={(d.Wireless ? Math.Min(DisplayHz(), 60) : Math.Clamp(DisplayHz(), 60, 144))}",
+            $"--max-fps={fps}",
         };
         if (size > 0) args.Add($"--max-size={size}");
         if (cfg.StayAwake) args.Add("--stay-awake");
@@ -743,6 +784,7 @@ public class MainForm : Form
         p.ErrorDataReceived += (_, e) => OnLine(e.Data);
         p.Exited += (_, _) => Ui(() =>
         {
+            lock (active) active.RemoveAll(a => a.Proc == p);
             mirrorsOpen--;
             mirroring.Remove(d.Serial);
             int code = 0;
@@ -782,6 +824,7 @@ public class MainForm : Form
         try
         {
             p.Start();
+            lock (active) active.Add((p, null));
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
             try { p.PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }   // smoother video decoding
@@ -805,6 +848,11 @@ public class MainForm : Form
                     ScreenshotRequested = dev => Screenshot(dev),
                     Log = msg => Log(msg, "warn"),
                 };
+                lock (active)
+                {
+                    active.RemoveAll(a => a.Proc == p);
+                    active.Add((p, frame));
+                }
                 _ = AttachFrame(frame, p);
             }
         }

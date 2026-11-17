@@ -25,6 +25,8 @@ class Settings
     public string LastIp { get; set; } = "";
     /// <summary>-1 = Auto (picks per USB / Wi-Fi), 0 = full resolution, else max size in pixels.</summary>
     public int MaxSize { get; set; } = -1;
+    /// <summary>0 = Auto (match the display), otherwise frames per second.</summary>
+    public int FrameRate { get; set; }
     public bool Audio { get; set; } = true;
     public bool ScreenOff { get; set; }
     public bool StayAwake { get; set; } = true;
