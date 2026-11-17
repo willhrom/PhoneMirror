@@ -36,7 +36,10 @@ class PhoneFrameForm : Form
 
     int BezelFor(int screenW) => Math.Clamp(screenW / 30, 6, 16);
     int Bezel => BezelFor(screenSize.Width);
-    int OuterRadius => Math.Clamp(Math.Min(screenSize.Width, screenSize.Height) / 7, 16, 60);
+    static int OuterRadiusFor(Size screen) => Math.Clamp(Math.Min(screen.Width, screen.Height) / 7, 16, 60);
+    int ScreenRadiusFor(Size screen) => Math.Max(6, OuterRadiusFor(screen) - BezelFor(screen.Width));
+    int OuterRadius => OuterRadiusFor(screenSize);
+    Size regionSize;
     int PhoneW => screenSize.Width + 2 * Bezel;
     int PhoneH => screenSize.Height + 2 * Bezel;
     Rectangle ScreenRect => new(Bezel, Bezel, screenSize.Width, screenSize.Height);
@@ -150,8 +153,18 @@ class PhoneFrameForm : Form
         if (processExited || WindowState == FormWindowState.Minimized) return;
         int b = BezelFor(screen.Width);
         if (child != IntPtr.Zero)
+        {
             SetWindowPos(child, TopMost ? HWND_TOPMOST : IntPtr.Zero, frame.X + b, frame.Y + b, screen.Width, screen.Height,
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | (TopMost ? 0u : SWP_NOZORDER));
+            // Round the picture's corners to sit inside the bezel (only when the size changes).
+            if (screen != regionSize)
+            {
+                regionSize = screen;
+                int d = ScreenRadiusFor(screen) * 2;
+                var rgn = CreateRoundRectRgn(0, 0, screen.Width + 1, screen.Height + 1, d, d);
+                if (SetWindowRgn(child, rgn, true) == 0) DeleteObject(rgn);
+            }
+        }
         PlaceDock(frame);
     }
 
@@ -263,7 +276,8 @@ class PhoneFrameForm : Form
         using (var path = RoundRect(new Rectangle(1, 1, PhoneW - 3, PhoneH - 3), OuterRadius - 1))
             g.DrawPath(pen, path);
         using (var black = new SolidBrush(Color.Black))
-            g.FillRectangle(black, ScreenRect);
+        using (var hole = RoundRect(ScreenRect, ScreenRadiusFor(screenSize)))
+            g.FillPath(black, hole);
         // side buttons, drawn as a subtle ridge on the right edge
         using (var nub = new Pen(buttonColor, 2f))
         {
@@ -427,6 +441,9 @@ class PhoneFrameForm : Form
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
 }
 
 /// <summary>
