@@ -224,7 +224,8 @@ class MirrorService : Service() {
         waitingFor = null
         getSystemService(NotificationManager::class.java).cancel(ID_REQUEST)
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
-        if (client != null) startEncoding() else main.postDelayed(releaseLater, KEEP_SHARING_MS)
+        if (client != null) startEncoding()
+        else if (!Prefs.keepSharing(this)) main.postDelayed(releaseLater, KEEP_SHARING_MS)
         updateStatus()
     }
 
@@ -505,7 +506,8 @@ class MirrorService : Service() {
                 stopEncoding()
                 waitingFor = null
                 getSystemService(NotificationManager::class.java).cancel(ID_REQUEST)
-                if (capturing) main.postDelayed(releaseLater, KEEP_SHARING_MS)
+                // Keep sharing approved for next time (one tap per phone restart), unless turned off.
+                if (capturing && !Prefs.keepSharing(this)) main.postDelayed(releaseLater, KEEP_SHARING_MS)
                 updateStatus()
             }
         }

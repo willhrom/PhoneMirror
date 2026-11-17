@@ -46,6 +46,7 @@ class MainActivity : Activity() {
     private lateinit var restrictedHint: TextView
     private lateinit var bgSwitch: Switch
     private lateinit var bootSwitch: Switch
+    private lateinit var keepSwitch: Switch
     private lateinit var batteryButton: Button
     private lateinit var updateText: TextView
     private lateinit var updateButton: Button
@@ -119,7 +120,11 @@ class MainActivity : Activity() {
             return
         }
         val mpm = getSystemService(MediaProjectionManager::class.java)
-        try { startActivityForResult(mpm.createScreenCaptureIntent(), 1) } catch (_: Exception) { }
+        // Android 14+: ask for the whole screen directly, so there's no "what to share" choice. Just Start.
+        val intent = if (Build.VERSION.SDK_INT >= 34)
+            mpm.createScreenCaptureIntent(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay())
+        else mpm.createScreenCaptureIntent()
+        try { startActivityForResult(intent, 1) } catch (_: Exception) { }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -153,7 +158,7 @@ class MainActivity : Activity() {
         when {
             client != null && capturing -> state(good, "Mirroring", "Showing on $client")
             waiting != null -> state(warn, "$waiting wants to mirror", "Tap Share screen, then Start")
-            capturing -> state(good, "Sharing is on", "Open Phone Mirror on your laptop and click Mirror")
+            capturing -> state(good, "Sharing is on", "Click Mirror on your laptop. It opens right away.")
             running -> state(accent, "Ready for your laptop", "Click Mirror on your laptop. You'll tap once here to allow it.")
             else -> state(muted, "Off", "Turn on \"Stay ready\" below, or tap Share screen")
         }
@@ -171,6 +176,7 @@ class MainActivity : Activity() {
 
         bgSwitch.isChecked = Prefs.background(this)
         bootSwitch.isChecked = Prefs.startAtBoot(this)
+        keepSwitch.isChecked = Prefs.keepSharing(this)
         bootSwitch.isEnabled = Prefs.background(this)
         // updates
         val avail = AppUpdater.updateAvailable(this)
@@ -365,6 +371,9 @@ class MainActivity : Activity() {
         }
         bootSwitch = switchRow(bgCard, "Start when the phone turns on", "So it's always ready") { on ->
             Prefs.setStartAtBoot(this, on)
+        }
+        keepSwitch = switchRow(bgCard, "Keep sharing on", "Tap Start once; mirroring then opens instantly until you stop it or restart the phone") { on ->
+            Prefs.setKeepSharing(this, on)
         }
         batteryButton = smallButton("Don't let Android pause the app") {
             try {

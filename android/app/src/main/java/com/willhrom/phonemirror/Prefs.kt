@@ -34,6 +34,10 @@ object Prefs {
     fun background(c: Context): Boolean = sp(c).getBoolean("background", true)
     fun setBackground(c: Context, v: Boolean) = sp(c).edit().putBoolean("background", v).apply()
 
+    /** Keep screen sharing approved between mirroring sessions (tap Start once per phone restart). */
+    fun keepSharing(c: Context): Boolean = sp(c).getBoolean("keepSharing", true)
+    fun setKeepSharing(c: Context, v: Boolean) = sp(c).edit().putBoolean("keepSharing", v).apply()
+
     /** Start waiting for the laptop when the phone turns on. */
     fun startAtBoot(c: Context): Boolean = sp(c).getBoolean("boot", true)
     fun setStartAtBoot(c: Context, v: Boolean) = sp(c).edit().putBoolean("boot", v).apply()
