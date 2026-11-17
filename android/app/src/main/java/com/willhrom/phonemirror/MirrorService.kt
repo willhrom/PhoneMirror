@@ -100,6 +100,7 @@ class MirrorService : Service() {
     private val queue = LinkedBlockingQueue<Packet>(96)
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wifiLock2: WifiManager.WifiLock? = null
     @Volatile private var lastCut = 0L
     private val releaseLater = Runnable { stopSharing() }
     /** Looks for app updates a minute after starting, then every 6 hours (installs only when not mirroring). */
@@ -406,7 +407,7 @@ class MirrorService : Service() {
 
     private fun handleSocket(sock: Socket) {
         sock.tcpNoDelay = true
-        try { sock.sendBufferSize = 96 * 1024 } catch (_: Exception) { }
+        try { sock.sendBufferSize = 256 * 1024 } catch (_: Exception) { }
         val c = WsConnection(sock)
         try {
             if (!c.handshake { info() }) { c.close(); return }
@@ -436,7 +437,13 @@ class MirrorService : Service() {
                         }
                     }
                     "sync" -> if (approved) { needKey = true; encoder?.requestKeyFrame() }
-                    "ping" -> sendText(JSONObject().put("t", "pong").put("ts", m.optDouble("ts")))
+                    "ping" -> {
+                        // Answer right away (not behind queued video) and report how long video is waiting here.
+                        val oldest = queue.peek()
+                        val qwait = if (oldest == null) 0L else (System.nanoTime() - oldest.queuedAt) / 1_000_000
+                        try { c.sendText(JSONObject().put("t", "pong").put("ts", m.optDouble("ts")).put("q", qwait).toString()) } catch (_: Exception) { }
+                    }
+                    "k" -> { }   // keep-awake tick from the laptop (keeps Wi-Fi out of power saving)
                     "quality" -> if (approved) {
                         // The laptop's phone window changed size: re-encode at a size that fits it.
                         val s = settings
@@ -540,8 +547,12 @@ class MirrorService : Service() {
             try {
                 val wm = applicationContext.getSystemService(WifiManager::class.java)
                 @Suppress("DEPRECATION")
-                val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                wifiLock = wm.createWifiLock(mode, "phonemirror:stream").apply { setReferenceCounted(false); acquire() }
+                // Both kinds: "high performance" (older Androids) and "low latency" (newer ones honor it
+                // while the app is on screen). The laptop's keep-awake ticks cover the rest.
+                @Suppress("DEPRECATION")
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "phonemirror:perf").apply { setReferenceCounted(false); acquire() }
+                if (Build.VERSION.SDK_INT >= 29)
+                    wifiLock2 = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "phonemirror:lowlat").apply { setReferenceCounted(false); acquire() }
             } catch (_: Exception) { }
         }
         if (wakeLock?.isHeld == true) return
@@ -553,7 +564,9 @@ class MirrorService : Service() {
 
     private fun releaseWake() {
         try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (_: Exception) { }
+        try { if (wifiLock2?.isHeld == true) wifiLock2?.release() } catch (_: Exception) { }
         wifiLock = null
+        wifiLock2 = null
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) { }
         wakeLock = null
     }

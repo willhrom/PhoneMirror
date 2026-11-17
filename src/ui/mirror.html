@@ -47,7 +47,7 @@ const $ = id => document.getElementById(id);
 const canvas = $('c'), ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
 // Decoder delay tracking: if the PC's hardware decoder holds frames back, switch to software decoding.
-let hwMode = 'prefer-hardware', decSamples = [], decAvg = 0, switched = false, rtt = 0;
+let hwMode = 'prefer-hardware', decSamples = [], decAvg = 0, switched = false, rtt = 0, phoneQueue = 0;
 const sentAt = new Map();
 function noteDecode(ms){
   decSamples.push(ms);
@@ -93,7 +93,7 @@ function onText(m){
     case 'config': setup(m.w, m.h); break;
     case 'control': control = !!m.enabled; if (!control) toast('Control is off. Turn it on in the Phone Mirror app on your phone.', 6000); break;
     case 'error': toast(m.text, 8000); tell({ type:'error', text:m.text }); break;
-    case 'pong': rtt = performance.now() - m.ts; break;
+    case 'pong': rtt = performance.now() - m.ts; phoneQueue = m.q || 0; break;
   }
 }
 
@@ -368,13 +368,18 @@ $('codeGo').onclick = () => {
 };
 $('code').addEventListener('keydown', e => { if (e.key === 'Enter') $('codeGo').click(); });
 
+// ---------- keep the phone's Wi-Fi awake ----------
+// Phones nap their Wi-Fi between packets (power saving), which delays everything we send them.
+// A tiny tick every 20 ms keeps it awake while mirroring.
+setInterval(() => { if (ws && ws.readyState === 1 && ws.bufferedAmount < 4096) ws.send('{"t":"k"}'); }, 20);
+
 // ---------- stats (F2) ----------
 const stats = { frames: 0, bytes: 0 };
 setInterval(() => {
   const el = $('stats');
   if (!el.classList.contains('hidden'))
     el.textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbps · ${vw}×${vh}\n` +
-      `network ${Math.round(rtt)} ms round trip · decode ${Math.round(decAvg)} ms (${hwMode === 'prefer-hardware' ? 'hardware' : 'software'})`;
+      `network ${Math.round(rtt)} ms round trip · phone queue ${phoneQueue} ms · decode ${Math.round(decAvg)} ms (${hwMode === 'prefer-hardware' ? 'hw' : 'sw'})`;
   send({ t:'ping', ts: performance.now() });
   stats.frames = 0; stats.bytes = 0;
 }, 1000);
