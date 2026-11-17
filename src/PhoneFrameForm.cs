@@ -258,36 +258,74 @@ class PhoneFrameForm : Form
         ApplyShape();
     }
 
-    void ApplyShape()
+    void ApplyShape() => Render(null, screenSize);
+
+    protected override CreateParams CreateParams
     {
-        var region = new Region(RoundRect(new Rectangle(0, 0, PhoneW, PhoneH), OuterRadius));
-        Region = region;
-        Invalidate();
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= 0x00080000; // WS_EX_LAYERED: per-pixel alpha, so the phone's edges are smooth
+            return cp;
+        }
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    /// <summary>
+    /// Draws the phone body into an anti-aliased, transparent bitmap and hands it to Windows
+    /// as the window's look (smooth rounded edges; the corners outside are see-through and click-through).
+    /// </summary>
+    void Render(Point? at, Size screen)
     {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var bodyBrush = new SolidBrush(bodyColor))
-        using (var path = RoundRect(new Rectangle(0, 0, PhoneW, PhoneH), OuterRadius))
-            g.FillPath(bodyBrush, path);
-        using (var pen = new Pen(edgeColor, 2f))
-        using (var path = RoundRect(new Rectangle(1, 1, PhoneW - 3, PhoneH - 3), OuterRadius - 1))
-            g.DrawPath(pen, path);
-        using (var black = new SolidBrush(Color.Black))
-        using (var hole = RoundRect(ScreenRect, ScreenRadiusFor(screenSize)))
-            g.FillPath(black, hole);
-        // side buttons, drawn as a subtle ridge on the right edge
-        using (var nub = new Pen(buttonColor, 2f))
+        var hwnd = Handle; // make sure the window exists before giving it its look
+        int b = BezelFor(screen.Width), R = OuterRadiusFor(screen), r = ScreenRadiusFor(screen);
+        int w = screen.Width + 2 * b, h = screen.Height + 2 * b;
+        using var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
         {
-            int x = PhoneW - 2;
-            g.DrawLine(nub, x, (int)(PhoneH * 0.20), x, (int)(PhoneH * 0.27));
-            g.DrawLine(nub, x, (int)(PhoneH * 0.31), x, (int)(PhoneH * 0.43));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.Clear(Color.Transparent);
+            using (var bodyBrush = new SolidBrush(bodyColor))
+            using (var path = RoundRect(new RectangleF(0.5f, 0.5f, w - 1f, h - 1f), R))
+                g.FillPath(bodyBrush, path);
+            using (var pen = new Pen(edgeColor, 1.6f))
+            using (var path = RoundRect(new RectangleF(1.3f, 1.3f, w - 2.6f, h - 2.6f), R - 1))
+                g.DrawPath(pen, path);
+            using (var black = new SolidBrush(Color.Black))
+            using (var hole = RoundRect(new RectangleF(b - 0.5f, b - 0.5f, screen.Width + 1f, screen.Height + 1f), r + 0.5f))
+                g.FillPath(black, hole);
+            using (var nub = new Pen(buttonColor, 2f))
+            {
+                float x = w - 1.5f;
+                g.DrawLine(nub, x, h * 0.20f, x, h * 0.27f);
+                g.DrawLine(nub, x, h * 0.31f, x, h * 0.43f);
+            }
+            float cr = Math.Max(2f, b / 3f);
+            using (var camBrush = new SolidBrush(Color.FromArgb(8, 8, 10)))
+                g.FillEllipse(camBrush, w / 2f - cr, b / 2f - cr, cr * 2, cr * 2);
         }
-        int r = Math.Max(2, Bezel / 3);
-        var cam = new Rectangle(PhoneW / 2 - r, Bezel / 2 - r, r * 2, r * 2);
-        using (var camBrush = new SolidBrush(Color.FromArgb(8, 8, 10))) g.FillEllipse(camBrush, cam);
+
+        IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc);
+        IntPtr hBmp = bmp.GetHbitmap(Color.FromArgb(0)), old = SelectObject(memDc, hBmp);
+        try
+        {
+            var size = new SIZE { cx = w, cy = h };
+            var src = new POINT();
+            var blend = new BLENDFUNCTION { BlendOp = 0, BlendFlags = 0, SourceConstantAlpha = 255, AlphaFormat = 1 };
+            if (at is Point p)
+            {
+                var dst = new POINT { x = p.X, y = p.Y };
+                UpdateLayeredWindow(hwnd, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, 2);
+            }
+            else UpdateLayeredWindow(hwnd, screenDc, IntPtr.Zero, ref size, memDc, ref src, 0, ref blend, 2);
+        }
+        finally
+        {
+            SelectObject(memDc, old);
+            DeleteObject(hBmp);
+            DeleteDC(memDc);
+            ReleaseDC(IntPtr.Zero, screenDc);
+        }
     }
 
     protected override void OnSizeChanged(EventArgs e)
@@ -305,6 +343,18 @@ class PhoneFrameForm : Form
     {
         base.OnActivated(e);
         PlaceAll(Bounds);
+    }
+
+    static GraphicsPath RoundRect(RectangleF r, float radius)
+    {
+        float d = Math.Max(2f, Math.Min(radius * 2, Math.Min(r.Width, r.Height)));
+        var p = new GraphicsPath();
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 
     static GraphicsPath RoundRect(Rectangle r, int radius)
@@ -361,6 +411,7 @@ class PhoneFrameForm : Form
                 if (fromLeft) rc.Left = rc.Right - w; else rc.Right = rc.Left + w;
                 if (fromTop) rc.Top = rc.Bottom - h; else rc.Bottom = rc.Top + h;
                 Marshal.StructureToPtr(rc, m.LParam, false);
+                Render(new Point(rc.Left, rc.Top), s);
                 PlaceAll(new Rectangle(rc.Left, rc.Top, w, h), s);
                 m.Result = (IntPtr)1;
                 return;
@@ -444,6 +495,19 @@ class PhoneFrameForm : Form
     [DllImport("user32.dll")] static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
     [DllImport("gdi32.dll")] static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
+
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int x, y; }
+    [StructLayout(LayoutKind.Sequential)] struct SIZE { public int cx, cy; }
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    struct BLENDFUNCTION { public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat; }
+
+    [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr hdcDst, ref POINT pptDst, ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc, int key, ref BLENDFUNCTION blend, int flags);
+    [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr hdcDst, IntPtr pptDst, ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc, int key, ref BLENDFUNCTION blend, int flags);
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
 }
 
 /// <summary>

@@ -688,7 +688,7 @@ public class MainForm : Form
         if (size < 0)
         {
             size = d.Wireless ? 1280 : 1920;
-            bitrate = d.Wireless ? "4M" : "10M";
+            bitrate = d.Wireless ? "4M" : "16M";
         }
 
         // H.265 needs about half the bandwidth of H.264 for the same picture: smoother over Wi-Fi.
@@ -700,7 +700,7 @@ public class MainForm : Form
             $"--video-codec={(h265 ? "h265" : "h264")}",
             $"--window-title={phone?.DisplayName ?? d.Model} — Phone Mirror",
             $"--video-bit-rate={bitrate}",
-            "--max-fps=60",
+            $"--max-fps={(d.Wireless ? Math.Min(DisplayHz(), 60) : Math.Clamp(DisplayHz(), 60, 144))}",
         };
         if (size > 0) args.Add($"--max-size={size}");
         if (cfg.StayAwake) args.Add("--stay-awake");
@@ -1088,6 +1088,36 @@ public class MainForm : Form
     {
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
     }
+
+    /// <summary>Refresh rate of the display Phone Mirror is on (60 if unknown), so USB mirroring can match a 90/120/144 Hz screen.</summary>
+    int DisplayHz()
+    {
+        try
+        {
+            var dm = new DEVMODE { dmSize = (short)Marshal.SizeOf<DEVMODE>() };
+            var screen = Visible ? Screen.FromControl(this) : Screen.PrimaryScreen;
+            if (screen != null && EnumDisplaySettings(screen.DeviceName, -1 /* current */, ref dm) && dm.dmDisplayFrequency > 1)
+                return dm.dmDisplayFrequency;
+        }
+        catch { }
+        return 60;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DEVMODE
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+        public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+        public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public short dmLogPixels;
+        public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+        public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
 
     static string WithPort(string ip) => ip.Contains(':') ? ip : ip + ":5555";
     static string FirstLine(string s) => s.Split('\n').FirstOrDefault(l => l.Trim() != "")?.Trim() ?? "no response";
