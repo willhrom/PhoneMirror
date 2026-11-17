@@ -57,6 +57,7 @@ public class MainForm : Form
         tray.Visible = true;
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Open Phone Mirror", null, (_, _) => ShowWindow());
+        trayMenu.Items.Add("Check for updates", null, async (_, _) => { ShowWindow(); await CheckForUpdate(manual: true); });
         trayMenu.Items.Add("Mirror my phone", null, (_, _) => StartMirror(null));
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("Quit", null, (_, _) => { reallyQuit = true; Close(); });
@@ -132,6 +133,8 @@ public class MainForm : Form
             Log("Check your internet connection, then click \"Update engine\" below.", "warn");
         }
         _ = CheckForUpdate();
+        updateTimer.Tick += (_, _) => _ = CheckForUpdate();
+        updateTimer.Start();
     }
 
     async Task<bool> InitWebView()
@@ -263,6 +266,7 @@ public class MainForm : Form
 
     void ShowWindow()
     {
+        if ((DateTime.Now - lastUpdateCheck).TotalMinutes > 20) _ = CheckForUpdate();
         Show();
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Activate();
@@ -366,6 +370,7 @@ public class MainForm : Form
                 case "openFolder": OpenFolder(Str("which") == "shots" ? ShotDir : RecordDir); break;
                 case "updateEngine": await UpdateEngine(); break;
                 case "applyUpdate": await ApplyUpdate(); break;
+                case "checkUpdate": await CheckForUpdate(manual: true); break;
                 case "copyLog":
                     Clipboard.SetText(string.Join("\r\n", logHistory.Select(l => $"{l.Time}  {l.Text}")) + "\r\n");
                     Toast("Activity copied");
@@ -446,17 +451,32 @@ public class MainForm : Form
 
     // ================= app updates =================
 
-    async Task CheckForUpdate()
+    DateTime lastUpdateCheck = DateTime.MinValue;
+    readonly System.Windows.Forms.Timer updateTimer = new() { Interval = 3 * 60 * 60 * 1000 };   // every 3 hours
+
+    /// <summary>Looks for a newer version on GitHub. Runs at start, every few hours, whenever the window is opened, and on request.</summary>
+    async Task CheckForUpdate(bool manual = false)
     {
+        lastUpdateCheck = DateTime.Now;
         try
         {
             var u = await Updater.CheckAsync();
-            if (u == null) return;
+            if (u == null)
+            {
+                if (manual) Toast("You have the latest version");
+                return;
+            }
+            bool isNew = updateVersion == null;
             updateUrl = u.Value.Url;
             updateVersion = $"{u.Value.Version.Major}.{u.Value.Version.Minor}.{u.Value.Version.Build}";
             PushState();
+            if (isNew && !Visible)
+                tray.ShowBalloonTip(5000, "Phone Mirror update", $"Version {updateVersion} is ready. Open Phone Mirror to update.", ToolTipIcon.Info);
         }
-        catch { }
+        catch
+        {
+            if (manual) Toast("Couldn't check for updates. Are you online?");
+        }
     }
 
     async Task ApplyUpdate()
