@@ -328,7 +328,7 @@ function pos(e){
 let down = false, lastMove = 0, moveTimer = null, lastPos = null;
 // Taps are decided here, where the timing is exact. Network delay can't stretch a click into a long press.
 // A press only becomes a finger on the phone once it's held (holdMs) or dragged (more than a few pixels).
-const holdMs = 220, dragPx = 6;
+const holdMs = 350, dragPx = 8;
 let press = null, laptopTaps = false;   // { x, y, cx, cy, timer, sent }
 function startFinger(){
   if (!press || press.sent) return;
@@ -383,7 +383,7 @@ function wheelFinish(){
 }
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  if (down) return;
+  if (down || e.ctrlKey) return;      // ctrl+wheel = touchpad pinch, not a scroll
   const r = canvas.getBoundingClientRect();
   const h = vw && vh ? Math.min(r.width / vw, r.height / vh) * vh : r.height;
   let dy = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY;
@@ -393,7 +393,7 @@ canvas.addEventListener('wheel', e => {
     // start where there's room to move in the scroll direction
     const startY = dy < 0 ? Math.max(p.y, 0.55) : Math.min(p.y, 0.45);
     wheel = { x: p.x, y: startY, startY };
-    send({ t:'down', x: wheel.x, y: wheel.y });
+    send({ t:'down', now:true, x: wheel.x, y: wheel.y });
     send({ t:'move', x: wheel.x, y: wheel.y + (dy < 0 ? -0.02 : 0.02) });  // moves at once: never a long press
     wheel.y += dy < 0 ? -0.02 : 0.02;
   }
@@ -404,7 +404,7 @@ canvas.addEventListener('wheel', e => {
     const x = wheel.x, sy = wheel.startY;
     wheelFinish();
     wheel = { x, y: sy, startY: sy };
-    send({ t:'down', x, y: sy });
+    send({ t:'down', now:true, x, y: sy });
   }
   const now = performance.now();
   if (now - wheelSent >= 16) { wheelSent = now; send({ t:'move', x: wheel.x, y: wheel.y }); }
@@ -421,7 +421,7 @@ canvas.addEventListener('keydown', e => {
   }
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === 'Backspace') { send({ t:'key', k:'del' }); e.preventDefault(); return; }
-  if (e.key === 'Enter') { send({ t:'key', k:'enter' }); e.preventDefault(); return; }
+  if (e.key === 'Enter') { send({ t:'key', k: e.shiftKey ? 'newline' : 'enter' }); e.preventDefault(); return; }   // Enter sends, Shift+Enter = new line
   if (e.key === 'Escape') { send({ t:'key', k:'back' }); e.preventDefault(); return; }
   if (e.key.length === 1) { send({ t:'text', s:e.key }); e.preventDefault(); }
 });

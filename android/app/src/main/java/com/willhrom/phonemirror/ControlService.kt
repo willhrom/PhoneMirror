@@ -5,6 +5,8 @@ import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Path
 import android.graphics.PointF
+import android.graphics.Rect
+import android.view.inputmethod.EditorInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -102,23 +104,46 @@ class ControlService : AccessibilityService() {
         main.postDelayed(startHeld, 110)
     }
 
+    private var pendingTap: PointF? = null
+
     private fun tap(p: PointF) {
+        // A finger is still lifting from the last swipe: tap right after it, instead of cancelling it.
+        if (busy) { pendingTap = p; return }
         val path = Path().apply { moveTo(p.x, p.y) }
         dispatchGesture(GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 40)).build(), null, null)
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 60)).build(), null, null)
     }
 
+    private var gen = 0
+    private var deferredStart: PointF? = null
+
     private fun beginStroke(p: PointF) {
-        stroke = null
-        busy = false
         pending = null
         pendingUp = false
+        if (busy && stroke == null) {
+            // The last finger is still lifting: put this one down as soon as it's up (moves are kept meanwhile).
+            deferredStart = p
+            return
+        }
+        startStroke(p)
+    }
+
+    private fun startStroke(p: PointF) {
+        gen++
+        stroke = null
+        busy = false
         val path = Path().apply { moveTo(p.x, p.y) }
         val s = GestureDescription.StrokeDescription(path, 0, 1, true)
         stroke = s
         last = p
         lastSent = android.os.SystemClock.uptimeMillis()
         dispatch(s)
+    }
+
+    /** Called whenever the phone finished playing a piece and no finger is down any more. */
+    private fun afterLift() {
+        deferredStart?.let { deferredStart = null; startStroke(it); return }
+        pendingTap?.let { pendingTap = null; tap(it) }
     }
 
     private fun move(p: PointF) {
@@ -172,17 +197,21 @@ class ControlService : AccessibilityService() {
 
     private fun dispatch(s: GestureDescription.StrokeDescription) {
         busy = true
+        val g = gen
         val ok = dispatchGesture(GestureDescription.Builder().addStroke(s).build(), object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
+                if (g != gen) return          // an older finger: ignore, it must not touch the new one
                 busy = false
-                pump()
+                if (stroke == null) afterLift() else pump()
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
+                if (g != gen) return
                 busy = false
                 stroke = null
                 pending = null
                 pendingUp = false
+                afterLift()
             }
         }, main)
         if (!ok) {
@@ -216,6 +245,7 @@ class ControlService : AccessibilityService() {
             "notifications" -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
             "power" -> performGlobalAction(if (Build.VERSION.SDK_INT >= 28) GLOBAL_ACTION_LOCK_SCREEN else GLOBAL_ACTION_POWER_DIALOG)
             "enter" -> enter()
+            "newline" -> newline()
             "del" -> backspace()
         }
     }
@@ -289,7 +319,55 @@ class ControlService : AccessibilityService() {
         placeCursor(n, from)
     }
 
+    /**
+     * Enter works like on a laptop chat app: it sends. Fields with a keyboard action (send, search, go)
+     * get that action; chat boxes get their Send button pressed. Otherwise it's a normal Enter.
+     */
     private fun enter() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            val info = try { inputMethod?.currentInputEditorInfo } catch (_: Exception) { null }
+            val ic = imeConnection()
+            if (info != null && ic != null) {
+                val action = info.imeOptions and EditorInfo.IME_MASK_ACTION
+                val noAction = info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0
+                if (!noAction && action in listOf(EditorInfo.IME_ACTION_SEND, EditorInfo.IME_ACTION_GO,
+                        EditorInfo.IME_ACTION_SEARCH, EditorInfo.IME_ACTION_DONE, EditorInfo.IME_ACTION_NEXT)) {
+                    ic.performEditorAction(action); return
+                }
+            }
+        }
+        val n = focused()
+        if (n != null && n.isMultiLine && pressSend(n)) return
+        newline()
+    }
+
+    /** Finds the chat's Send button next to the text box and presses it. */
+    private fun pressSend(field: AccessibilityNodeInfo): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val fb = Rect().also { field.getBoundsInScreen(it) }
+        var best: AccessibilityNodeInfo? = null
+        var bestDist = Float.MAX_VALUE
+        val todo = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+        var seen = 0
+        while (todo.isNotEmpty() && seen < 3000) {
+            val n = todo.removeFirst(); seen++
+            for (i in 0 until n.childCount) n.getChild(i)?.let { todo.add(it) }
+            if (n.isEditable || !n.isVisibleToUser || !n.isEnabled) continue
+            val label = listOfNotNull(n.contentDescription?.toString(), n.text?.toString(), n.viewIdResourceName?.substringAfterLast('/'))
+                .joinToString(" ").lowercase()
+            if (!Regex("(^|[^a-z])send([^a-z]|$)|send_?button|sendbutton|send_?message|send_?icon").containsMatchIn(label)) continue
+            var c: AccessibilityNodeInfo? = n
+            while (c != null && !c.isClickable) c = c.parent
+            if (c == null) continue
+            val b = Rect().also { c.getBoundsInScreen(it) }
+            val d = abs(b.centerX() - fb.centerX()).toFloat() + abs(b.centerY() - fb.centerY()) * 2f
+            if (d < bestDist) { bestDist = d; best = c }
+        }
+        return best?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+    }
+
+    /** Shift+Enter: a new line. */
+    private fun newline() {
         if (sendKey(KeyEvent.KEYCODE_ENTER)) return
         val n = focused() ?: return
         val done = Build.VERSION.SDK_INT >= 30 &&
