@@ -666,7 +666,9 @@ public class MainForm : Form
 
     // ================= mirroring =================
 
-    void StartMirror(Device? target)
+    readonly HashSet<string> noH265 = new();
+
+    void StartMirror(Device? target, bool forceH264 = false)
     {
         if (!engineReady || Tools.Scrcpy == null) { Toast("Still getting ready…"); return; }
         var d = target ?? DefaultDevice;
@@ -689,9 +691,13 @@ public class MainForm : Form
             bitrate = d.Wireless ? "4M" : "10M";
         }
 
+        // H.265 needs about half the bandwidth of H.264 for the same picture: smoother over Wi-Fi.
+        bool h265 = d.Wireless && !forceH264 && !(phone?.NoH265 ?? false) && !noH265.Contains(KeyOf(d));
+
         var args = new List<string>
         {
             $"--serial={d.Serial}",
+            $"--video-codec={(h265 ? "h265" : "h264")}",
             $"--window-title={phone?.DisplayName ?? d.Model} — Phone Mirror",
             $"--video-bit-rate={bitrate}",
             "--max-fps=60",
@@ -753,6 +759,14 @@ public class MainForm : Form
             {
                 _ = Handoff(d);
             }
+            else if (code != 0 && h265 && (DateTime.Now - started).TotalSeconds < 20 && !closing)
+            {
+                // This phone can't do H.265: remember that and retry with H.264.
+                noH265.Add(KeyOf(d));
+                if (phone != null) { phone.NoH265 = true; cfg.Save(); }
+                Log($"{d.Model} doesn't support the faster video format over Wi-Fi. Using the standard one.");
+                StartMirror(d, forceH264: true);
+            }
             else if (code != 0 && (DateTime.Now - started).TotalSeconds < 20)
             {
                 Log($"The mirror for {d.Model} couldn't start. Details:", "error");
@@ -770,6 +784,7 @@ public class MainForm : Form
             p.Start();
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
+            try { p.PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }   // smoother video decoding
             mirrorsOpen++;
             mirroring.Add(d.Serial);
             PushState();

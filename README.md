@@ -27,7 +27,7 @@ The first time it runs, it downloads the mirroring engine (scrcpy, ~10 MB) to `%
 - **Auto quality**: sharp over USB, low-lag over Wi-Fi
 - **Start with Windows**: runs quietly in the tray, so plugging in your phone just works
 - Offers to add itself to the Start menu and desktop, and **updates itself** from this repo's releases
-- **Looks like a phone**: the mirror sits inside a phone body (black, silver, or blue) with a button strip for power, volume, back, home, recents, screenshot and keep-on-top. Drag the bezel to move it, drag the bottom-right corner to resize it, and it rotates with your phone. Choose **Look: Plain window** for the classic window.
+- **Looks like a phone**: the mirror sits inside a phone body (black, silver, or blue), with a floating control dock that fades in below it: back, home, recents, screenshot, volume, power, size, keep on top. Drag the bezel to move it, drag a corner to resize it, and it rotates with your phone. Choose **Look: Plain** for a classic window.
 - **My phones**: every phone you connect is saved. Rename it, give it its own look and quality, reconnect it with one click, or forget it
 - **Resizable phone window**: drag any rounded corner or use the + / − buttons. Each phone remembers its window size and position
 - Mirror and control over **USB** or **Wi-Fi**
