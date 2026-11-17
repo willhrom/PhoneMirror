@@ -227,15 +227,7 @@ public class MainForm : Form
             type = "state",
             version = $"{v.Major}.{v.Minor}.{v.Build}",
             engine = new { ready = engineReady, version = Tools.InstalledVersion },
-            devices = devices.Select(d => new
-            {
-                serial = d.Serial,
-                model = d.Model,
-                connection = d.Connection,
-                state = d.State,
-                ready = d.Ready,
-                mirroring = mirroring.Contains(d.Serial),
-            }),
+            phones = PhonesView(),
             settings = cfg,
             update = updateVersion,
             busy = busyText == null ? null : new { text = busyText, pct = busyPct },
@@ -251,7 +243,8 @@ public class MainForm : Form
             using var doc = JsonDocument.Parse(e.WebMessageAsJson);
             var r = doc.RootElement;
             string? Str(string k) => r.TryGetProperty(k, out var x) && x.ValueKind == JsonValueKind.String ? x.GetString() : null;
-            Device? Dev() { var sn = Str("serial"); return sn == null ? null : devices.FirstOrDefault(d => d.Serial == sn); }
+            string Id() => Str("id") ?? "";
+            KnownPhone? Ph() => cfg.Phones.FirstOrDefault(p => p.Id == Id());
 
             switch (Str("cmd"))
             {
@@ -260,10 +253,40 @@ public class MainForm : Form
                     Post(new { type = "logHistory", items = logHistory.Select(l => new { time = l.Time, text = l.Text, level = l.Level }) });
                     PushState();
                     break;
-                case "mirror": StartMirror(Dev()); break;
-                case "screenshot": await Screenshot(Dev()); break;
-                case "enableWifi": await ManualEnableWifi(Dev()); break;
-                case "disconnect": await Disconnect(Dev()); break;
+                case "mirror":
+                    var best = BestFor(Id());
+                    if (best == null && Ph() is KnownPhone off && await Reconnect(off)) best = BestFor(Id());
+                    if (best != null) StartMirror(best);
+                    break;
+                case "screenshot": await Screenshot(BestFor(Id())); break;
+                case "enableWifi": await ManualEnableWifi(ConnsFor(Id()).FirstOrDefault(d => d.Ready && !d.Wireless)); break;
+                case "disconnect": await Disconnect(Id()); break;
+                case "reconnect": if (Ph() is KnownPhone rp) await Reconnect(rp); break;
+                case "rename":
+                    if (Ph() is KnownPhone np) { np.Name = (Str("name") ?? "").Trim(); cfg.Save(); PushState(); Toast("Saved"); }
+                    break;
+                case "phoneSetting":
+                    if (Ph() is KnownPhone sp)
+                    {
+                        var val = r.GetProperty("value");
+                        if (Str("key") == "look") sp.Look = val.ValueKind == JsonValueKind.String ? val.GetString() ?? "" : "";
+                        if (Str("key") == "quality") sp.Quality = val.ValueKind == JsonValueKind.Number ? val.GetInt32() : null;
+                        if (Str("key") == "resetWindow") { sp.WindowSize = 0; sp.WindowX = sp.WindowY = int.MinValue; Toast("Window size reset"); }
+                        cfg.Save();
+                        PushState();
+                    }
+                    break;
+                case "forget":
+                    if (Ph() is KnownPhone fp)
+                    {
+                        await Disconnect(fp.Id);
+                        cfg.Phones.Remove(fp);
+                        if (fp.LastIp != "" && cfg.LastIp == fp.LastIp) cfg.LastIp = "";
+                        cfg.Save();
+                        Log($"Forgot {fp.DisplayName}.");
+                        PushState();
+                    }
+                    break;
                 case "setting": ApplySetting(Str("key") ?? "", r.GetProperty("value")); break;
                 case "connectIp": await ConnectIp(Str("ip") ?? ""); break;
                 case "pairCode": await PairWithCode(Str("addr") ?? "", Str("code") ?? ""); break;
@@ -451,6 +474,27 @@ public class MainForm : Form
 
         deviceSignature = sig;
         devices = now;
+
+        // Remember every phone we see (one entry per phone, even when it's on USB and Wi-Fi at once).
+        bool saved = false;
+        foreach (var d in now.Where(x => x.Ready))
+        {
+            var id = await IdOf(d);
+            if (id.StartsWith("serial:")) continue;
+            var ph = cfg.Phones.FirstOrDefault(p => p.Id == id);
+            if (ph == null)
+            {
+                ph = new KnownPhone { Id = id, Model = d.Model };
+                cfg.Phones.Add(ph);
+                Log($"Saved {d.Model} to My phones.", "good");
+            }
+            ph.Model = d.Model;
+            ph.LastSeen = DateTime.Now;
+            if (!d.Wireless) paused.Remove(id);
+            if (d.Wireless && d.Serial.EndsWith(":5555")) ph.LastIp = d.Serial[..^5];
+            saved = true;
+        }
+        if (saved) cfg.Save();
         PushState();
 
         var usb = newlyReady.FirstOrDefault(d => !d.Wireless);
@@ -497,6 +541,7 @@ public class MainForm : Form
         if (o.Contains("connected to"))
         {
             cfg.LastIp = ip;
+            if (PhoneFor(usb) is KnownPhone ph) ph.LastIp = ip;
             cfg.Save();
             Log($"Wi-Fi ready for {usb.Model} ({ip}). You can unplug anytime.", "good");
         }
@@ -519,6 +564,106 @@ public class MainForm : Form
 
     Device? DefaultDevice => devices.FirstOrDefault(x => x.Ready && !x.Wireless) ?? devices.FirstOrDefault(x => x.Ready);
 
+    // ================= my phones =================
+
+    readonly Dictionary<string, string> hwIds = new();
+    readonly HashSet<string> paused = new();   // phones you disconnected on purpose: don't auto-reconnect
+
+    /// <summary>A phone's hardware serial, so its USB and Wi-Fi connections count as one phone.</summary>
+    async Task<string> IdOf(Device d)
+    {
+        if (hwIds.TryGetValue(d.Serial, out var id)) return id;
+        if (!d.Ready) return "serial:" + d.Serial;
+        var (_, o) = await Tools.AdbAsync(5000, "-s", d.Serial, "shell", "getprop", "ro.serialno");
+        var s = o.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l != "") ?? "";
+        if (s.Length < 3 || s.Contains(' ') || s.Contains(':')) s = d.Wireless ? "serial:" + d.Serial : d.Serial;
+        hwIds[d.Serial] = s;
+        return s;
+    }
+
+    string KeyOf(Device d) => hwIds.TryGetValue(d.Serial, out var id) ? id : "serial:" + d.Serial;
+    KnownPhone? PhoneFor(Device d) => hwIds.TryGetValue(d.Serial, out var id) ? cfg.Phones.FirstOrDefault(p => p.Id == id) : null;
+    IEnumerable<Device> ConnsFor(string id) => devices.Where(d => KeyOf(d) == id);
+    Device? BestFor(string id) => ConnsFor(id).FirstOrDefault(d => d.Ready && !d.Wireless) ?? ConnsFor(id).FirstOrDefault(d => d.Ready);
+    bool Online(KnownPhone p) => ConnsFor(p.Id).Any(d => d.Ready);
+
+    object PhonesView()
+    {
+        var groups = devices.GroupBy(KeyOf).ToDictionary(g => g.Key, g => g.ToList());
+        var rows = new List<(bool Online, DateTime Seen, object View)>();
+        var listed = new HashSet<string>();
+
+        object View(string id, KnownPhone? p, List<Device> conns)
+        {
+            bool online = conns.Any(c => c.Ready);
+            string status = online ? "ready"
+                : conns.Any(c => c.State == "unauthorized") ? "unauthorized"
+                : conns.Any(c => c.State == "offline") ? "offline" : "away";
+            var model = p?.Model ?? conns.FirstOrDefault()?.Model ?? "Android phone";
+            return new
+            {
+                id,
+                name = p?.DisplayName ?? model,
+                nickname = p?.Name ?? "",
+                model,
+                saved = p != null,
+                online,
+                status,
+                usb = conns.Any(c => c.Ready && !c.Wireless),
+                wifi = conns.Any(c => c.Ready && c.Wireless),
+                mirroring = conns.Any(c => mirroring.Contains(c.Serial)),
+                lastSeen = p == null ? "" : Seen(p.LastSeen),
+                lastIp = p?.LastIp ?? "",
+                look = p?.Look ?? "",
+                quality = p?.Quality,
+                customWindow = p != null && p.WindowSize > 0,
+            };
+        }
+
+        foreach (var p in cfg.Phones)
+        {
+            groups.TryGetValue(p.Id, out var conns);
+            conns ??= new List<Device>();
+            listed.Add(p.Id);
+            rows.Add((conns.Any(c => c.Ready), p.LastSeen, View(p.Id, p, conns)));
+        }
+        foreach (var g in groups.Where(g => !listed.Contains(g.Key)))
+            rows.Add((g.Value.Any(c => c.Ready), DateTime.Now, View(g.Key, null, g.Value)));
+
+        return rows.OrderByDescending(r => r.Online).ThenByDescending(r => r.Seen).Select(r => r.View).ToList();
+    }
+
+    static string Seen(DateTime t)
+    {
+        if (t == default) return "";
+        if (t.Date == DateTime.Today) return "today at " + t.ToString("h:mm tt");
+        if (t.Date == DateTime.Today.AddDays(-1)) return "yesterday";
+        return t.ToString("MMM d");
+    }
+
+    /// <summary>Tries to bring a saved phone back over Wi-Fi.</summary>
+    async Task<bool> Reconnect(KnownPhone p)
+    {
+        paused.Remove(p.Id);
+        if (Online(p)) return true;
+        Log($"Looking for {p.DisplayName}…");
+        if (p.LastIp != "")
+        {
+            var (_, o) = await Tools.AdbAsync(5000, "connect", p.LastIp + ":5555");
+            if (o.Contains("connected to")) { await RefreshDevices(); if (Online(p)) return true; }
+        }
+        // Phones paired with a QR code or pairing code announce themselves on the network.
+        var found = await Mdns.BrowseAsync("_adb-tls-connect._tcp.local", 1500, CancellationToken.None);
+        foreach (var f in found)
+            await Tools.AdbAsync(6000, "connect", f.Endpoint);
+        await Task.Delay(500);
+        await RefreshDevices();
+        if (Online(p)) { Log($"{p.DisplayName} is back.", "good"); return true; }
+        Log($"Couldn't reach {p.DisplayName}. Plug it in once, or turn on Wireless debugging on the phone.", "warn");
+        Toast($"Couldn't reach {p.DisplayName}");
+        return false;
+    }
+
     // ================= mirroring =================
 
     void StartMirror(Device? target)
@@ -534,7 +679,9 @@ public class MainForm : Form
             return;
         }
 
-        int size = cfg.MaxSize;
+        var phone = PhoneFor(d);
+        string look = string.IsNullOrEmpty(phone?.Look) ? cfg.FrameStyle : phone!.Look;
+        int size = phone?.Quality ?? cfg.MaxSize;
         string bitrate = d.Wireless ? "6M" : "8M";
         if (size < 0)
         {
@@ -545,7 +692,7 @@ public class MainForm : Form
         var args = new List<string>
         {
             $"--serial={d.Serial}",
-            $"--window-title={d.Model} — Phone Mirror",
+            $"--window-title={phone?.DisplayName ?? d.Model} — Phone Mirror",
             $"--video-bit-rate={bitrate}",
             "--max-fps=60",
         };
@@ -553,7 +700,7 @@ public class MainForm : Form
         if (cfg.StayAwake) args.Add("--stay-awake");
         if (cfg.ScreenOff) args.Add("--turn-screen-off");
         if (!cfg.Audio) args.Add("--no-audio");
-        bool framed = cfg.FrameStyle != "Off" && !cfg.Fullscreen;
+        bool framed = look != "Off" && !cfg.Fullscreen;
         if (framed) args.Add("--window-borderless");
         if (cfg.AlwaysOnTop && !framed) args.Add("--always-on-top");
         if (cfg.Fullscreen) args.Add("--fullscreen");
@@ -629,8 +776,17 @@ public class MainForm : Form
             Log($"Opening {d.Model} ({d.Connection})…{(rec != null ? " recording." : "")}");
             if (framed)
             {
-                frame = new PhoneFrameForm(p, d, cfg.FrameStyle, cfg.AlwaysOnTop, cfg.ButtonStrip)
+                var pos = phone != null && phone.WindowX != int.MinValue ? new Point(phone.WindowX, phone.WindowY) : (Point?)null;
+                frame = new PhoneFrameForm(p, d, look, cfg.AlwaysOnTop, cfg.ButtonStrip, phone?.WindowSize ?? 0, pos)
                 {
+                    SaveWindow = (longSide, at) =>
+                    {
+                        if (phone == null) return;
+                        phone.WindowSize = longSide;
+                        phone.WindowX = at.X;
+                        phone.WindowY = at.Y;
+                        cfg.Save();
+                    },
                     ScreenshotRequested = dev => Screenshot(dev),
                     Log = msg => Log(msg, "warn"),
                 };
@@ -654,18 +810,19 @@ public class MainForm : Form
 
     async Task Handoff(Device usb)
     {
+        var id = KeyOf(usb);
+        var lastIp = PhoneFor(usb)?.LastIp is { Length: > 0 } ip ? ip : cfg.LastIp;
         Log($"{usb.Model} unplugged. Switching to Wi-Fi…");
         for (int i = 0; i < 8 && !closing; i++)
         {
             await Task.Delay(1000);
-            var devs = await Tools.DevicesAsync();
-            var w = devs.FirstOrDefault(x => x.Wireless && x.Ready && x.Model == usb.Model);
-            if (w != null)
+            foreach (var w in (await Tools.DevicesAsync()).Where(x => x.Wireless && x.Ready))
             {
+                if (await IdOf(w) != id) continue;
                 if (mirrorsOpen == 0) StartMirror(w);
                 return;
             }
-            if (i == 2 && cfg.LastIp != "") await Tools.AdbAsync(4000, "connect", WithPort(cfg.LastIp));
+            if (i == 2 && lastIp != "") await Tools.AdbAsync(4000, "connect", WithPort(lastIp));
         }
         Log("Couldn't switch to Wi-Fi. Is the phone on the same Wi-Fi as this laptop?", "warn");
     }
@@ -701,13 +858,17 @@ public class MainForm : Form
         return null;
     }
 
+    /// <summary>Quietly re-attaches saved phones when they're back on the network.</summary>
     async Task ReconnectWifi()
     {
-        if (!engineReady || cfg.LastIp == "" || (DateTime.Now - lastReconnect).TotalSeconds < 15) return;
-        if (devices.Any(d => d.Wireless && d.Serial.StartsWith(cfg.LastIp + ":"))) return;
+        if (!engineReady || (DateTime.Now - lastReconnect).TotalSeconds < 15) return;
+        var ips = cfg.Phones.Where(p => p.LastIp != "" && !Online(p) && !paused.Contains(p.Id)).Select(p => p.LastIp).ToList();
+        if (cfg.LastIp != "" && !cfg.Phones.Any(p => p.LastIp == cfg.LastIp && paused.Contains(p.Id))) ips.Add(cfg.LastIp);
+        ips = ips.Distinct().Where(ip => !devices.Any(d => d.Serial.StartsWith(ip + ":"))).Take(6).ToList();
+        if (ips.Count == 0) return;
         lastReconnect = DateTime.Now;
-        var (_, o) = await Tools.AdbAsync(4000, "connect", WithPort(cfg.LastIp));
-        if (o.Contains("connected to")) await RefreshDevices();
+        var results = await Task.WhenAll(ips.Select(ip => Tools.AdbAsync(3500, "connect", ip + ":5555")));
+        if (results.Any(r => r.Output.Contains("connected to"))) await RefreshDevices();
     }
 
     async Task ConnectIp(string input)
@@ -852,12 +1013,16 @@ public class MainForm : Form
         return null;
     }
 
-    async Task Disconnect(Device? d)
+    async Task Disconnect(string id)
     {
-        if (d == null || !d.Wireless) return;
-        await Tools.AdbAsync("disconnect", d.Serial);
-        if (cfg.LastIp != "" && d.Serial.StartsWith(cfg.LastIp + ":")) { cfg.LastIp = ""; cfg.Save(); }
-        Log($"Disconnected {d.Model}.");
+        var wireless = ConnsFor(id).Where(d => d.Wireless).ToList();
+        paused.Add(id);
+        foreach (var d in wireless)
+        {
+            await Tools.AdbAsync("disconnect", d.Serial);
+            if (cfg.LastIp != "" && d.Serial.StartsWith(cfg.LastIp + ":")) { cfg.LastIp = ""; cfg.Save(); }
+        }
+        if (wireless.Count > 0) Log($"Disconnected {wireless[0].Model} from Wi-Fi.");
         await RefreshDevices();
     }
 

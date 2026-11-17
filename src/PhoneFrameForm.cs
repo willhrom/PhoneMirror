@@ -5,40 +5,54 @@ using System.Runtime.InteropServices;
 namespace PhoneMirror;
 
 /// <summary>
-/// A borderless, phone-shaped window (bezel, camera, side buttons, button strip).
+/// A borderless, phone-shaped window (bezel, camera, side buttons, button pill).
 /// The scrcpy video window stays its own window but is "owned" by this frame and kept
 /// glued over the frame's screen area, so it moves, minimizes and stacks with it.
+/// Resize from any corner or with the +/− buttons; size and position are remembered per phone.
 /// </summary>
 class PhoneFrameForm : Form
 {
-    const int Gap = 10, BarW = 36, BtnH = 30;
+    const int Gap = 10, BarW = 36, MinLong = 300;
 
     readonly Process proc;
     readonly Device device;
-    readonly Color bodyColor, edgeColor, buttonColor;
+    readonly Color bodyColor, edgeColor, buttonColor, iconColor, hoverColor;
     readonly Panel bar = new();
+    readonly List<Control> barItems = new();
     readonly Button pinBtn;
+    readonly string stripMode;
+    readonly int savedLong;
+    readonly Point? savedPos;
     readonly System.Windows.Forms.Timer watch = new() { Interval = 200 };
+    readonly System.Windows.Forms.Timer hoverTimer = new() { Interval = 120 };
 
     IntPtr child;
     double aspect = 9.0 / 19.5;
     Size screenSize = new(360, 780);
+    Size regionSize;
     bool processExited, closeRequested, layingOut;
+    DateTime lastInside = DateTime.MinValue;
 
     public Func<Device, Task>? ScreenshotRequested;
     public Action<string>? Log;
+    /// <summary>Called with (long side of the screen, window position) after a resize or move.</summary>
+    public Action<int, Point>? SaveWindow;
 
-    int Bezel => Math.Clamp(screenSize.Width / 30, 8, 16);
-    int OuterRadius => Math.Clamp(Math.Min(screenSize.Width, screenSize.Height) / 7, 22, 60);
-    int ScreenRadius => Math.Max(10, OuterRadius - Bezel);
+    int Bezel => Math.Clamp(screenSize.Width / 30, 6, 16);
+    int OuterRadius => Math.Clamp(Math.Min(screenSize.Width, screenSize.Height) / 7, 16, 60);
+    int ScreenRadius => Math.Max(8, OuterRadius - Bezel);
     int PhoneW => screenSize.Width + 2 * Bezel;
     int PhoneH => screenSize.Height + 2 * Bezel;
     Rectangle ScreenRect => new(Bezel, Bezel, screenSize.Width, screenSize.Height);
+    int LongSide => Math.Max(screenSize.Width, screenSize.Height);
 
-    public PhoneFrameForm(Process proc, Device device, string style, bool topMost, string stripMode = "hover")
+    public PhoneFrameForm(Process proc, Device device, string style, bool topMost, string stripMode, int savedLong, Point? savedPos)
     {
         this.proc = proc;
         this.device = device;
+        this.stripMode = stripMode;
+        this.savedLong = savedLong;
+        this.savedPos = savedPos;
         (bodyColor, edgeColor, buttonColor) = style switch
         {
             "Silver" => (Color.FromArgb(214, 216, 221), Color.FromArgb(160, 163, 170), Color.FromArgb(186, 189, 195)),
@@ -57,8 +71,7 @@ class PhoneFrameForm : Form
         TopMost = topMost;
         ShowInTaskbar = true;
 
-        // Slim pill in the phone's own color, grouped: window · phone keys · navigation
-        this.stripMode = stripMode;
+        // Slim pill in the phone's own color, grouped: window · size · phone keys · navigation
         bool light = style == "Silver";
         bar.BackColor = style switch
         {
@@ -67,12 +80,15 @@ class PhoneFrameForm : Form
             _ => Color.FromArgb(26, 26, 30),
         };
         iconColor = light ? Color.FromArgb(60, 64, 72) : Color.FromArgb(200, 205, 215);
-        var hover = light ? Color.FromArgb(206, 209, 215) : ControlPaint.Light(bar.BackColor, 0.35f);
-        var buttons = new (string Glyph, string Tip, Action? Act)[]
+        hoverColor = light ? Color.FromArgb(206, 209, 215) : ControlPaint.Light(bar.BackColor, 0.35f);
+        var items = new (string Glyph, string Tip, Action? Act)[]
         {
             ("", "Close", () => Close()),
             ("", "Minimize", () => WindowState = FormWindowState.Minimized),
             ("", "Keep on top", TogglePin),
+            ("", "", null),
+            ("", "Bigger", () => Zoom(1.15)),
+            ("", "Smaller", () => Zoom(1 / 1.15)),
             ("", "", null),
             ("", "Screenshot", () => { _ = ScreenshotRequested?.Invoke(device); }),
             ("", "Power / lock", () => Key(26)),
@@ -84,14 +100,14 @@ class PhoneFrameForm : Form
             ("", "Recent apps", () => Key(187)),
         };
         var tips = new ToolTip();
-        int y = 10;
         Button? pin = null;
-        foreach (var (glyph, tip, act) in buttons)
+        foreach (var (glyph, tip, act) in items)
         {
             if (act == null)
             {
-                bar.Controls.Add(new Panel { BackColor = hover, Bounds = new Rectangle(10, y + 4, BarW - 20, 1) });
-                y += 10;
+                var sep = new Panel { BackColor = hoverColor, Height = 1, Tag = "sep" };
+                barItems.Add(sep);
+                bar.Controls.Add(sep);
                 continue;
             }
             var b = new Button
@@ -101,57 +117,31 @@ class PhoneFrameForm : Form
                 FlatStyle = FlatStyle.Flat,
                 ForeColor = iconColor,
                 BackColor = bar.BackColor,
-                Bounds = new Rectangle(4, y, BarW - 8, BtnH - 4),
                 TabStop = false,
                 Cursor = Cursors.Hand,
             };
             b.FlatAppearance.BorderSize = 0;
-            b.FlatAppearance.MouseOverBackColor = hover;
-            b.FlatAppearance.MouseDownBackColor = hover;
+            b.FlatAppearance.MouseOverBackColor = hoverColor;
+            b.FlatAppearance.MouseDownBackColor = hoverColor;
             b.Click += (_, _) => { act(); FocusPhone(); };
             tips.SetToolTip(b, tip);
+            barItems.Add(b);
             bar.Controls.Add(b);
             if (tip == "Keep on top") pin = b;
-            y += BtnH;
         }
-        bar.Height = y + 8;
         pinBtn = pin!;
         UpdatePin();
         bar.Visible = stripMode == "always";
 
         Controls.Add(bar);
         watch.Tick += (_, _) => Watch();
-        LocationChanged += (_, _) => PlaceChild();
         hoverTimer.Tick += (_, _) => CheckHover();
         if (stripMode == "hover") hoverTimer.Start();
-    }
-
-    readonly string stripMode;
-    readonly Color iconColor;
-    readonly System.Windows.Forms.Timer hoverTimer = new() { Interval = 120 };
-    DateTime lastInside = DateTime.MinValue;
-
-    /// <summary>Shows the button pill while the mouse is over the phone, hides it shortly after it leaves.</summary>
-    void CheckHover()
-    {
-        if (!Visible || WindowState == FormWindowState.Minimized) return;
-        var pos = Cursor.Position;
-        var phone = new Rectangle(Left, Top, PhoneW, PhoneH);
-        var pill = bar.Visible ? new Rectangle(PointToScreen(bar.Location), bar.Size) : Rectangle.Empty;
-        var bridge = bar.Visible ? new Rectangle(Left + PhoneW, pill.Top, Gap + 2, pill.Height) : Rectangle.Empty;
-        bool inside = phone.Contains(pos) || pill.Contains(pos) || bridge.Contains(pos);
-        if (inside) lastInside = DateTime.Now;
-        bool show = inside || (DateTime.Now - lastInside).TotalMilliseconds < 700;
-        if (show != bar.Visible)
-        {
-            bar.Visible = show;
-            ApplyLayout();
-        }
+        LocationChanged += (_, _) => PlaceChild();
     }
 
     // ================= attaching =================
 
-    /// <summary>Waits for the scrcpy window, then dresses it in the phone frame.</summary>
     public async Task<bool> AttachAsync(Screen display)
     {
         for (int i = 0; i < 120 && child == IntPtr.Zero; i++)
@@ -167,17 +157,19 @@ class PhoneFrameForm : Form
         int cw = Math.Max(1, rc.Right - rc.Left), ch = Math.Max(1, rc.Bottom - rc.Top);
         aspect = (double)cw / ch;
 
+        // Use the remembered position's screen if it's still connected.
+        if (savedPos is Point sp && Screen.AllScreens.Any(s => s.WorkingArea.Contains(sp)))
+            display = Screen.FromPoint(sp);
         var wa = display.WorkingArea;
-        int maxH = (int)(wa.Height * 0.86), maxW = (int)(wa.Width * 0.7);
-        int sw, sh;
-        if (aspect < 1) { sh = Math.Min(maxH, Math.Max(ch, 560)); sw = (int)Math.Round(sh * aspect); }
-        else { sw = Math.Min(maxW, Math.Max(cw, 720)); sh = (int)Math.Round(sw / aspect); }
-        SetScreenSize(new Size(sw, sh));
-        Location = new Point(wa.Right - Width - 60, wa.Top + (wa.Height - Height) / 2);
+        int wanted = savedLong > 0 ? savedLong : (aspect < 1 ? Math.Max(ch, 640) : Math.Max(cw, 760));
+        SetScreenSize(SizeForLong(Math.Clamp(wanted, MinLong, MaxLong(wa))));
+        if (savedPos is Point p && Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(new Rectangle(p, new Size(PhoneW, PhoneH)))))
+            Location = p;
+        else
+            Location = new Point(wa.Right - Width - 60, wa.Top + (wa.Height - Height) / 2);
 
         Show();
 
-        // Hand the mirror window to us: owned (stays above the frame, minimizes with it), no own taskbar button.
         ShowWindow(child, SW_HIDE);
         var ex = (long)GetWindowLongPtr(child, GWL_EXSTYLE);
         ex = (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW;
@@ -190,7 +182,12 @@ class PhoneFrameForm : Form
         return true;
     }
 
-    /// <summary>Keeps the mirror window exactly over the frame's screen area.</summary>
+    int MaxLong(Rectangle wa) => aspect < 1 ? (int)(wa.Height * 0.92) - 32 : (int)(wa.Width * 0.85);
+
+    Size SizeForLong(int longSide) => aspect < 1
+        ? new Size((int)Math.Round(longSide * aspect), longSide)
+        : new Size(longSide, (int)Math.Round(longSide / aspect));
+
     void PlaceChild()
     {
         if (child == IntPtr.Zero || processExited || WindowState == FormWindowState.Minimized) return;
@@ -205,8 +202,6 @@ class PhoneFrameForm : Form
             if (SetWindowRgn(child, rgn, true) == 0) DeleteObject(rgn);
         }
     }
-
-    Size regionSize;
 
     void FocusPhone()
     {
@@ -226,14 +221,11 @@ class PhoneFrameForm : Form
         double a = (double)cw / ch;
         if ((a > 1) != (aspect > 1))
         {
+            int keep = LongSide;
             aspect = a;
-            int longSide = Math.Max(screenSize.Width, screenSize.Height);
             var wa = Screen.FromControl(this).WorkingArea;
-            int sw, sh;
-            if (aspect > 1) { sw = Math.Min(longSide, (int)(wa.Width * 0.8)); sh = (int)Math.Round(sw / aspect); }
-            else { sh = Math.Min(longSide, (int)(wa.Height * 0.86)); sw = (int)Math.Round(sh * aspect); }
             var center = new Point(Left + PhoneW / 2, Top + PhoneH / 2);
-            SetScreenSize(new Size(sw, sh));
+            SetScreenSize(SizeForLong(Math.Clamp(keep, MinLong, MaxLong(wa))));
             Location = new Point(
                 Math.Clamp(center.X - PhoneW / 2, wa.Left, Math.Max(wa.Left, wa.Right - Width)),
                 Math.Clamp(center.Y - PhoneH / 2, wa.Top, Math.Max(wa.Top, wa.Bottom - Height)));
@@ -241,20 +233,78 @@ class PhoneFrameForm : Form
         PlaceChild();
     }
 
+    void Zoom(double factor)
+    {
+        var wa = Screen.FromControl(this).WorkingArea;
+        int target = Math.Clamp((int)Math.Round(LongSide * factor), MinLong, MaxLong(wa));
+        if (target == LongSide) return;
+        var center = new Point(Left + PhoneW / 2, Top + PhoneH / 2);
+        SetScreenSize(SizeForLong(target));
+        Location = new Point(
+            Math.Clamp(center.X - PhoneW / 2, wa.Left, Math.Max(wa.Left, wa.Right - Width)),
+            Math.Clamp(center.Y - PhoneH / 2, wa.Top, Math.Max(wa.Top, wa.Bottom - Height)));
+        SaveWindow?.Invoke(LongSide, Location);
+    }
+
+    // ================= hover pill =================
+
+    void CheckHover()
+    {
+        if (!Visible || WindowState == FormWindowState.Minimized) return;
+        var pos = Cursor.Position;
+        var phone = new Rectangle(Left, Top, PhoneW, PhoneH);
+        var pill = bar.Visible ? new Rectangle(PointToScreen(bar.Location), bar.Size) : Rectangle.Empty;
+        var bridge = bar.Visible ? new Rectangle(Left + PhoneW, pill.Top, Gap + 2, pill.Height) : Rectangle.Empty;
+        bool inside = phone.Contains(pos) || pill.Contains(pos) || bridge.Contains(pos);
+        if (inside) lastInside = DateTime.Now;
+        bool show = inside || (DateTime.Now - lastInside).TotalMilliseconds < 700;
+        if (show != bar.Visible)
+        {
+            bar.Visible = show;
+            ApplyLayout();
+        }
+    }
+
     // ================= layout & shape =================
 
     void SetScreenSize(Size s)
     {
         layingOut = true;
-        screenSize = new Size(Math.Max(s.Width, 120), Math.Max(s.Height, 120));
-        ClientSize = new Size(PhoneW + Gap + BarW, Math.Max(PhoneH, bar.Height + 24));
+        screenSize = new Size(Math.Max(s.Width, 100), Math.Max(s.Height, 100));
+        LayoutBar();
+        ClientSize = new Size(PhoneW + Gap + BarW, Math.Max(PhoneH, bar.Height + 16));
         layingOut = false;
         ApplyLayout();
     }
 
+    /// <summary>Sizes the pill's buttons to fit next to the phone, even when it's small.</summary>
+    void LayoutBar()
+    {
+        int seps = barItems.Count(c => (c.Tag as string) == "sep");
+        int btns = barItems.Count - seps;
+        int btnH = Math.Clamp((PhoneH - 40 - seps * 9) / Math.Max(1, btns), 20, 30);
+        float font = btnH < 25 ? 8f : 9.5f;
+        int y = 8;
+        foreach (var c in barItems)
+        {
+            if ((c.Tag as string) == "sep")
+            {
+                c.Bounds = new Rectangle(10, y + 4, BarW - 20, 1);
+                y += 9;
+            }
+            else
+            {
+                c.Bounds = new Rectangle(4, y, BarW - 8, btnH - 2);
+                if (Math.Abs(c.Font.Size - font) > 0.1f) c.Font = new Font("Segoe MDL2 Assets", font);
+                y += btnH;
+            }
+        }
+        bar.Height = y + 6;
+    }
+
     void ApplyLayout()
     {
-        bar.Bounds = new Rectangle(PhoneW + Gap, Math.Min(Math.Max(20, PhoneH / 8), Math.Max(0, ClientSize.Height - bar.Height)), BarW, bar.Height);
+        bar.Bounds = new Rectangle(PhoneW + Gap, Math.Clamp(PhoneH / 10, 0, Math.Max(0, ClientSize.Height - bar.Height)), BarW, bar.Height);
         using (var bp = RoundRect(new Rectangle(0, 0, bar.Width, bar.Height), BarW / 2))
             bar.Region = new Region(bp);
 
@@ -271,8 +321,8 @@ class PhoneFrameForm : Form
     IEnumerable<Rectangle> SideButtons()
     {
         int x = PhoneW, h = PhoneH;
-        yield return new Rectangle(x - 1, (int)(h * 0.20), 4, (int)(h * 0.07));
-        yield return new Rectangle(x - 1, (int)(h * 0.30), 4, (int)(h * 0.12));
+        yield return new Rectangle(x - 1, (int)(h * 0.20), 3, (int)(h * 0.07));
+        yield return new Rectangle(x - 1, (int)(h * 0.30), 3, (int)(h * 0.12));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -291,7 +341,7 @@ class PhoneFrameForm : Form
         using (var nubBrush = new SolidBrush(buttonColor))
             foreach (var nub in SideButtons()) g.FillRectangle(nubBrush, nub);
 
-        int r = Math.Max(3, Bezel / 3);
+        int r = Math.Max(2, Bezel / 3);
         var cam = new Rectangle(PhoneW / 2 - r, Bezel / 2 - r, r * 2, r * 2);
         using (var camBrush = new SolidBrush(Color.FromArgb(8, 8, 10))) g.FillEllipse(camBrush, cam);
         using (var glint = new SolidBrush(Color.FromArgb(60, 70, 110)))
@@ -301,11 +351,13 @@ class PhoneFrameForm : Form
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        if (layingOut) return;
-        if (WindowState == FormWindowState.Minimized) return;
+        if (layingOut || WindowState == FormWindowState.Minimized) return;
         int sw = ClientSize.Width - Gap - BarW - 2 * Bezel;
         if (sw > 0 && sw != screenSize.Width)
+        {
             screenSize = new Size(sw, (int)Math.Round(sw / aspect));
+            LayoutBar();
+        }
         ApplyLayout();
     }
 
@@ -331,33 +383,47 @@ class PhoneFrameForm : Form
 
     protected override void WndProc(ref Message m)
     {
-        const int WM_NCHITTEST = 0x84, WM_SIZING = 0x214, WM_MOVING = 0x216, HTCAPTION = 2, HTBOTTOMRIGHT = 17;
+        const int WM_NCHITTEST = 0x84, WM_SIZING = 0x214, WM_MOVING = 0x216, WM_EXITSIZEMOVE = 0x232;
+        const int HTCAPTION = 2, HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
         if (m.Msg == WM_NCHITTEST)
         {
             base.WndProc(ref m);
             var p = PointToClient(new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16))));
             if (p.X < PhoneW && p.Y < PhoneH)
             {
-                bool corner = p.X > PhoneW - OuterRadius && p.Y > PhoneH - OuterRadius &&
-                              (p.X > PhoneW - Bezel - 6 || p.Y > PhoneH - Bezel - 6);
-                m.Result = (IntPtr)(corner ? HTBOTTOMRIGHT : HTCAPTION);
+                // The rounded corners resize (keeping the phone's shape); the rest of the bezel drags.
+                int c = Math.Max(OuterRadius, 22);
+                bool left = p.X < c, right = p.X > PhoneW - c, top = p.Y < c, bottom = p.Y > PhoneH - c;
+                m.Result = (IntPtr)(top && left ? HTTOPLEFT : top && right ? HTTOPRIGHT
+                    : bottom && left ? HTBOTTOMLEFT : bottom && right ? HTBOTTOMRIGHT : HTCAPTION);
             }
             return;
         }
         if (m.Msg == WM_SIZING)
         {
+            int edge = m.WParam.ToInt32();
             var rc = Marshal.PtrToStructure<RECT>(m.LParam);
+            var wa = Screen.FromControl(this).WorkingArea;
             int extraW = Gap + BarW + 2 * Bezel;
-            int sw = Math.Max(140, rc.Right - rc.Left - extraW);
-            int sh = (int)Math.Round(sw / aspect);
-            rc.Right = rc.Left + sw + extraW;
-            rc.Bottom = rc.Top + Math.Max(sh + 2 * Bezel, bar.Height + 24);
+            int sw = rc.Right - rc.Left - extraW;
+            int sh = rc.Bottom - rc.Top - 2 * Bezel;
+            // Follow whichever direction the mouse moved more, keep the aspect ratio.
+            var cur = screenSize;
+            bool byHeight = Math.Abs(sh - cur.Height) * aspect > Math.Abs(sw - cur.Width);
+            var s = byHeight ? new Size((int)Math.Round(sh * aspect), sh) : new Size(sw, (int)Math.Round(sw / aspect));
+            int lng = Math.Clamp(Math.Max(s.Width, s.Height), MinLong, MaxLong(wa) + 200);
+            s = SizeForLong(lng);
+            int w = s.Width + extraW, h = Math.Max(s.Height + 2 * Bezel, bar.Height + 16);
+            bool fromLeft = edge is 1 or 4 or 7, fromTop = edge is 3 or 4 or 5;
+            if (fromLeft) rc.Left = rc.Right - w; else rc.Right = rc.Left + w;
+            if (fromTop) rc.Top = rc.Bottom - h; else rc.Bottom = rc.Top + h;
             Marshal.StructureToPtr(rc, m.LParam, false);
             m.Result = (IntPtr)1;
             return;
         }
         base.WndProc(ref m);
         if (m.Msg == WM_MOVING) PlaceChild();
+        if (m.Msg == WM_EXITSIZEMOVE) SaveWindow?.Invoke(LongSide, Location);
     }
 
     // ================= buttons =================
@@ -393,6 +459,7 @@ class PhoneFrameForm : Form
             if (!closeRequested)
             {
                 closeRequested = true;
+                SaveWindow?.Invoke(LongSide, Location);
                 PostMessage(child, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero);
                 _ = Task.Delay(3000).ContinueWith(_ => { try { if (!proc.HasExited) proc.Kill(); } catch { } });
             }

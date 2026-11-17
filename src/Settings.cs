@@ -2,6 +2,23 @@ using System.Text.Json;
 
 namespace PhoneMirror;
 
+/// <summary>A phone Phone Mirror has seen before, keyed by its hardware serial.</summary>
+class KnownPhone
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";       // nickname; empty = use model
+    public string Model { get; set; } = "";
+    public string LastIp { get; set; } = "";     // reachable on :5555 last time
+    public DateTime LastSeen { get; set; }
+    public string Look { get; set; } = "";       // "" = use the default look
+    public int? Quality { get; set; }            // null = use the default quality
+    public int WindowSize { get; set; }          // long side of the screen in px; 0 = automatic
+    public int WindowX { get; set; } = int.MinValue;
+    public int WindowY { get; set; } = int.MinValue;
+
+    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Model : Name;
+}
+
 class Settings
 {
     public string LastIp { get; set; } = "";
@@ -22,6 +39,8 @@ class Settings
     public bool StartWithWindows { get; set; }
     public bool InstallAsked { get; set; }
     public bool TrayTipShown { get; set; }
+
+    public List<KnownPhone> Phones { get; set; } = new();
 
     static string FilePath => Path.Combine(Tools.AppDir, "settings.json");
 

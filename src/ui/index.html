@@ -59,6 +59,11 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px;
 .chip.warn{color:#fde68a;background:#2e2610}
 .chip.bad{color:#fecaca;background:#2e1515}
 .chip.live{color:#c7d7ff;background:#1b2440}
+.sub2{color:var(--dim);font-size:12.5px;margin-top:-2px}
+.chip.off{color:var(--muted);background:var(--s2)}
+.ghost.big{padding:10px 16px;font-weight:600;color:var(--text);background:var(--s2)}
+.danger{border:1px solid #4a2326;background:#22121466;color:#fca5a5;border-radius:10px;padding:8px 14px}
+.danger:hover{background:#3a1a1d}
 .hint{margin-top:8px;color:var(--warn);font-size:12.5px}
 .acts{display:flex;align-items:center;gap:8px}
 .icon-btn{width:38px;height:38px;display:grid;place-items:center;border-radius:11px;border:1px solid var(--line);background:var(--s1);color:var(--muted)}
@@ -106,6 +111,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px;
 .sw input:checked+span{background:linear-gradient(135deg,var(--accent),var(--accent2))}
 .sw input:checked+span::after{left:21px;background:#fff}
 .seg{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;background:var(--bg);border:1px solid var(--line);border-radius:11px;padding:4px;margin:10px 0 12px}
+.seg5{grid-template-columns:repeat(5,1fr)}.seg6{grid-template-columns:repeat(6,1fr)}
 .seg3{grid-template-columns:repeat(3,1fr);margin-top:0}
 .seg button{border:0;background:transparent;border-radius:8px;padding:7px 0;color:var(--muted);font-size:12.5px}
 .seg button.on{background:var(--s3);color:var(--text);box-shadow:0 1px 0 #ffffff10 inset}
@@ -185,7 +191,7 @@ table.sc td:last-child{text-align:right}
 
   <main>
     <section class="col">
-      <div class="h"><h2>Your phones</h2><span class="sub" id="devSub"></span></div>
+      <div class="h"><h2>My phones</h2><span class="sub" id="devSub"></span></div>
       <div id="devices"></div>
 
       <div class="h" style="margin-top:22px"><h2>Add a phone wirelessly</h2></div>
@@ -339,6 +345,25 @@ table.sc td:last-child{text-align:right}
   </div>
 </div>
 
+<!-- Phone settings modal -->
+<div class="back hidden" id="m-phone" data-close>
+  <div class="modal">
+    <h3 id="phTitle">Phone</h3>
+    <p class="lead" id="phSub"></p>
+    <div class="field"><label>Name</label><input id="phName" maxlength="40"></div>
+    <div class="field"><label>Look for this phone</label>
+      <div class="seg seg5" id="phLook" style="margin:0"><button data-v="">Default</button><button data-v="Black">Black</button><button data-v="Silver">Silver</button><button data-v="Blue">Blue</button><button data-v="Off">Plain</button></div></div>
+    <div class="field"><label>Quality for this phone</label>
+      <div class="seg seg6" id="phQ" style="margin:0"><button data-v="">Default</button><button data-v="-1">Auto</button><button data-v="0">Max</button><button data-v="1920">Sharp</button><button data-v="1280">Smooth</button><button data-v="800">Light</button></div></div>
+    <div class="field" id="phWinRow"><label>Window</label>
+      <div style="display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px">Size and position are remembered. <button class="ghost" style="padding:5px 10px" onclick="post('phoneSetting',{id:phId,key:'resetWindow',value:null})">Reset</button></div></div>
+    <div class="mfoot" style="justify-content:space-between;margin-top:18px">
+      <button class="danger" id="phForget" onclick="forgetPhone()">Forget phone</button>
+      <div style="display:flex;gap:10px"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="savePhone()">Save</button></div>
+    </div>
+  </div>
+</div>
+
 <div class="busy hidden" id="busy"><div class="box">
   <div class="logo" style="margin:0 auto;width:52px;height:52px;border-radius:15px"><svg class="i" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18h2"/></svg></div>
   <div class="t" id="busyText">Getting things ready…</div><div class="d">This only happens once.</div>
@@ -360,6 +385,9 @@ const IC = {
   cam:'<svg class="i" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2l2-2h6l2 2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   x:'<svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   check:'<svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  gear:'<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  refresh:'<svg class="i" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>',
+  clock:'<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   alert:'<svg class="i" viewBox="0 0 24 24"><path d="M12 3.5l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>',
 };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -368,44 +396,56 @@ function render(){
   if(!S) return;
   $('ver').textContent = 'Version ' + S.version;
   const ep = $('enginePill');
-  const n = S.devices.filter(d => d.ready).length;
+  const n = (S.phones || []).filter(p => p.online).length;
   ep.innerHTML = !S.engine.ready ? '<span class="dot warn"></span><span>Starting…</span>'
     : n ? `<span class="dot good"></span><span>${n} phone${n>1?'s':''} connected</span>`
         : '<span class="dot"></span><span>Waiting for a phone</span>';
   $('updatePill').classList.toggle('hidden', !S.update);
   if (S.update) $('updateText').textContent = 'Version ' + S.update + ' is ready';
 
-  // devices
+  // phones
   const box = $('devices');
-  if (!S.devices.length) {
+  const phones = S.phones || [];
+  if (!phones.length) {
     $('devSub').textContent = '';
     box.innerHTML = `<div class="empty">
       <div class="illus"><div class="ph"><div></div></div><div class="pulse"></div><div class="cable"></div></div>
       <div><h3>${S.engine.ready ? 'Plug in your phone' : 'Getting things ready…'}</h3>
-        <p>It opens here automatically. First time? Turn on USB debugging. It takes a minute.</p>
+        <p>It opens here automatically and is saved to My phones. First time? Turn on USB debugging. It takes a minute.</p>
         <div class="steps"><span class="step"><b>1</b>Turn on USB debugging</span><span class="step"><b>2</b>Plug in</span><span class="step"><b>3</b>Tap “Allow”</span></div>
         <div class="links"><button class="primary" onclick="openModal('help')">Show me how</button><button class="ghost" onclick="openModal('tips')">Phone not showing up?</button></div>
       </div></div>`;
   } else {
-    $('devSub').textContent = 'Double-click a phone to open it';
-    box.innerHTML = S.devices.map(d => {
-      const st = d.ready ? (d.mirroring ? ['live','Mirroring'] : ['good','Ready'])
-               : d.state === 'unauthorized' ? ['warn','Waiting for “Allow”'] : ['bad', d.state === 'offline' ? 'Offline' : d.state];
-      const conn = d.connection === 'USB' ? `<span class="chip">${IC.plug}USB</span>` : `<span class="chip">${IC.wifi}Wi-Fi</span>`;
-      const hint = d.state === 'unauthorized' ? '<div class="hint">Unlock your phone and tap “Allow” on the USB debugging prompt.</div>'
-                 : d.state === 'offline' ? '<div class="hint">Unplug and plug it back in.</div>' : '';
-      const s = esc(d.serial);
-      return `<div class="dev ${d.ready ? 'ready' : 'off'}" ondblclick="post('mirror',{serial:'${s}'})">
+    const on = phones.filter(p => p.online).length;
+    $('devSub').textContent = `${phones.length} saved · ${on} connected`;
+    box.innerHTML = phones.map(p => {
+      const id = esc(p.id);
+      const st = p.status === 'ready' ? (p.mirroring ? ['live','Mirroring'] : ['good','Ready'])
+               : p.status === 'unauthorized' ? ['warn','Waiting for “Allow”']
+               : p.status === 'offline' ? ['bad','Offline'] : ['off', p.lastSeen ? 'Last seen ' + p.lastSeen : 'Not connected'];
+      const conns = (p.usb ? `<span class="chip">${IC.plug}USB</span>` : '') + (p.wifi ? `<span class="chip">${IC.wifi}Wi-Fi</span>` : '');
+      const stIcon = st[0]==='good'||st[0]==='live' ? IC.check : st[0]==='off' ? IC.clock : IC.alert;
+      const hint = p.status === 'unauthorized' ? '<div class="hint">Unlock your phone and tap “Allow” on the USB debugging prompt.</div>'
+                 : p.status === 'offline' ? '<div class="hint">Unplug and plug it back in.</div>' : '';
+      const main = p.online
+        ? `<button class="primary" onclick="post('mirror',{id:'${id}'})">${IC.play}Mirror</button>`
+        : p.saved && p.status === 'away'
+          ? `<button class="ghost big" onclick="post('reconnect',{id:'${id}'})">${IC.refresh}Reconnect</button>`
+          : `<button class="primary" disabled>${IC.play}Mirror</button>`;
+      return `<div class="dev ${p.online ? 'ready' : 'off'}" ondblclick="post('mirror',{id:'${id}'})">
         <div class="mini"><div></div></div>
-        <div><div class="model">${esc(d.model)}</div><div class="chips">${conn}<span class="chip ${st[0]}">${st[0]==='good'||st[0]==='live' ? IC.check : IC.alert}${st[1]}</span></div>${hint}</div>
+        <div style="min-width:0"><div class="model">${esc(p.name)}</div>${p.nickname ? `<div class="sub2">${esc(p.model)}</div>` : ''}
+          <div class="chips">${conns}<span class="chip ${st[0]}">${stIcon}${esc(st[1])}</span></div>${hint}</div>
         <div class="acts">
-          ${d.ready ? `<button class="icon-btn" title="Screenshot" onclick="post('screenshot',{serial:'${s}'})">${IC.cam}</button>` : ''}
-          ${d.ready && d.connection === 'USB' ? `<button class="icon-btn" title="Turn on Wi-Fi for this phone" onclick="post('enableWifi',{serial:'${s}'})">${IC.wifi}</button>` : ''}
-          ${d.connection !== 'USB' ? `<button class="icon-btn" title="Disconnect" onclick="post('disconnect',{serial:'${s}'})">${IC.x}</button>` : ''}
-          <button class="primary" ${d.ready ? '' : 'disabled'} onclick="post('mirror',{serial:'${s}'})">${IC.play}Mirror</button>
+          ${p.online ? `<button class="icon-btn" title="Screenshot" onclick="post('screenshot',{id:'${id}'})">${IC.cam}</button>` : ''}
+          ${p.usb && !p.wifi ? `<button class="icon-btn" title="Turn on Wi-Fi for this phone" onclick="post('enableWifi',{id:'${id}'})">${IC.wifi}</button>` : ''}
+          ${p.wifi ? `<button class="icon-btn" title="Disconnect Wi-Fi" onclick="post('disconnect',{id:'${id}'})">${IC.x}</button>` : ''}
+          ${p.saved ? `<button class="icon-btn" title="Phone settings" onclick="openPhone('${id}')">${IC.gear}</button>` : ''}
+          ${main}
         </div></div>`;
     }).join('');
   }
+  if (openId === 'phone') fillPhone();
 
   // settings
   document.querySelectorAll('input[data-key]').forEach(i => i.checked = !!S.settings[i.dataset.key]);
@@ -455,6 +495,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeModal();
   if (e.key === 'Enter' && openId === 'ip') submitIp();
   if (e.key === 'Enter' && openId === 'code') submitCode();
+  if (e.key === 'Enter' && openId === 'phone') savePhone();
 });
 function submitIp(){ const v = $('ipAddr').value.trim(); if (!v) return $('ipAddr').focus(); post('connectIp', {ip: v}); closeModal(); }
 function submitCode(){
@@ -466,6 +507,37 @@ function setQrStatus(text, level){
   const el = $('qrStatus');
   el.className = 'status' + (level === 'good' ? ' good' : level === 'bad' ? ' bad' : '');
   el.innerHTML = (level === 'wait' ? '<span class="spin"></span>' : level === 'good' ? IC.check : IC.alert) + `<span>${esc(text)}</span>`;
+}
+
+
+let phId = null, forgetArmed = false;
+const phoneById = id => (S && S.phones || []).find(p => p.id === id);
+function openPhone(id){
+  phId = id; forgetArmed = false;
+  openModal('phone');
+  const p = phoneById(id);
+  $('phName').value = p ? p.nickname : '';
+  setTimeout(() => $('phName').focus(), 50);
+  fillPhone();
+}
+function fillPhone(){
+  const p = phoneById(phId);
+  if (!p) return closeModal();
+  $('phTitle').textContent = p.name;
+  $('phSub').textContent = p.model + (p.lastIp ? ' · ' + p.lastIp : '') + (p.lastSeen && !p.online ? ' · last seen ' + p.lastSeen : '');
+  $('phName').placeholder = p.model;
+  document.querySelectorAll('#phLook button').forEach(b => b.classList.toggle('on', b.dataset.v === (p.look || '')));
+  const q = p.quality === null || p.quality === undefined ? '' : String(p.quality);
+  document.querySelectorAll('#phQ button').forEach(b => b.classList.toggle('on', b.dataset.v === q));
+  $('phWinRow').classList.toggle('hidden', !p.customWindow);
+  $('phForget').textContent = forgetArmed ? 'Click again to forget' : 'Forget phone';
+}
+document.querySelectorAll('#phLook button').forEach(b => b.addEventListener('click', () => post('phoneSetting', {id: phId, key: 'look', value: b.dataset.v})));
+document.querySelectorAll('#phQ button').forEach(b => b.addEventListener('click', () => post('phoneSetting', {id: phId, key: 'quality', value: b.dataset.v === '' ? null : +b.dataset.v})));
+function savePhone(){ post('rename', {id: phId, name: $('phName').value}); closeModal(); }
+function forgetPhone(){
+  if (!forgetArmed) { forgetArmed = true; fillPhone(); return; }
+  post('forget', {id: phId}); closeModal();
 }
 
 let toastTimer;
@@ -487,10 +559,10 @@ else {
   // Preview data (when opened outside the app)
   handle({type:'state', version:'1.0.5', engine:{ready:true}, update:null, busy:null,
     settings:{autoMirror:true,autoWifi:true,startWithWindows:false,audio:true,screenOff:false,stayAwake:true,alwaysOnTop:false,fullscreen:false,record:false,maxSize:-1,frameStyle:'Black',buttonStrip:'hover',lastIp:'192.168.1.20'},
-    devices: location.hash === '#empty' ? [] : [
-      {serial:'abc',model:'Pixel 8',connection:'USB',state:'device',ready:true,mirroring:true},
-      {serial:'192.168.1.20:5555',model:'Pixel 8',connection:'Wi-Fi',state:'device',ready:true,mirroring:false},
-      {serial:'xyz',model:'Galaxy S23',connection:'USB',state:'unauthorized',ready:false,mirroring:false}]});
+    phones: location.hash === '#empty' ? [] : [
+      {id:'abc',name:'Will’s Pixel',nickname:'Will’s Pixel',model:'Pixel 8',saved:true,online:true,status:'ready',usb:true,wifi:true,mirroring:true,lastSeen:'today at 4:20 PM',lastIp:'192.168.1.20',look:'',quality:null,customWindow:true},
+      {id:'xyz',name:'Galaxy S23',nickname:'',model:'Galaxy S23',saved:false,online:false,status:'unauthorized',usb:false,wifi:false,mirroring:false,lastSeen:'',lastIp:'',look:'',quality:null},
+      {id:'tab',name:'Galaxy Tab S9',nickname:'',model:'Galaxy Tab S9',saved:true,online:false,status:'away',usb:false,wifi:false,mirroring:false,lastSeen:'yesterday',lastIp:'192.168.1.31',look:'Silver',quality:1280}]});
   ['Mirroring engine ready (scrcpy v3.3).','Pixel 8 connected over USB.','Wi-Fi ready for Pixel 8 (192.168.1.20). You can unplug anytime.','Opening Pixel 8 (USB)…']
     .forEach((t,i) => addLog({time:'15:3'+i+':0'+i, text:t, level: i===2?'good':''}));
 }
