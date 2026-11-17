@@ -66,7 +66,7 @@ class MirrorService : Service() {
         }
     }
 
-    private class Settings(val maxSize: Int = 1600, val bitrate: Int = 12_000_000, val fps: Int = 60)
+    private class Settings(val maxSize: Int = 1600, val bitrate: Int = 12_000_000, val fps: Int = 60, val audio: Boolean = true)
 
     private val main = Handler(Looper.getMainLooper())
     private var projection: MediaProjection? = null
@@ -77,6 +77,22 @@ class MirrorService : Service() {
     private var nsdListener: NsdManager.RegistrationListener? = null
     @Volatile private var client: WsConnection? = null
     @Volatile private var encoder: Encoder? = null
+    @Volatile private var audio: AudioCapture? = null
+    // Adaptive quality: drop the bit rate when the Wi-Fi falls behind, creep back up when it's smooth.
+    @Volatile private var currentBitrate = 12_000_000
+    @Volatile private var dropsSinceCheck = 0
+    private val adapt = object : Runnable {
+        override fun run() {
+            val enc = encoder ?: return
+            val target = settings.bitrate
+            if (dropsSinceCheck == 0 && currentBitrate < target) {
+                currentBitrate = minOf(target, (currentBitrate * 1.15).toInt())
+                enc.setBitrate(currentBitrate)
+            }
+            dropsSinceCheck = 0
+            main.postDelayed(this, 3000)
+        }
+    }
     @Volatile private var settings = Settings()
     @Volatile private var needKey = true
     private var size = Pair(0, 0)
@@ -243,6 +259,7 @@ class MirrorService : Service() {
         queue.clear()
         needKey = true
         queue.offer(Packet(0, 0, null, JSONObject().put("t", "config").put("w", w).put("h", h).toString()))
+        currentBitrate = settings.bitrate
         val enc = Encoder(w, h, settings.bitrate, settings.fps) { enqueue(it) }
         val surface = try { enc.start() } catch (e: Exception) {
             queue.offer(Packet(0, 0, null, JSONObject().put("t", "error").put("text", "Video encoder failed: ${e.message}").toString()))
@@ -259,10 +276,20 @@ class MirrorService : Service() {
             vd.surface = surface
         }
         acquireWake()
+        main.removeCallbacks(adapt)
+        main.postDelayed(adapt, 3000)
+        if (settings.audio && audio == null && AudioCapture.supported() &&
+            checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            val a = AudioCapture(proj) { enqueue(it) }
+            if (a.start()) audio = a
+        }
         if (c !== client) stopEncoding()
     }
 
     private fun stopEncoding() {
+        main.removeCallbacks(adapt)
+        audio?.stop()
+        audio = null
         val e = encoder
         encoder = null
         try { display?.surface = null } catch (_: Exception) { }
@@ -286,11 +313,15 @@ class MirrorService : Service() {
     private fun enqueue(p: Packet) {
         if (p.flags == 0 && p.text == null && needKey) return
         if (p.flags == Packet.KEY) needKey = false
-        if (!queue.offer(p) || queue.size > 10) {
+        if (!queue.offer(p) || queue.size > 12) {
             val keep = queue.filter { it.text != null || it.flags == Packet.CONFIG }
             queue.clear()
             queue.addAll(keep)
             needKey = true
+            // The network can't keep up: send less.
+            dropsSinceCheck++
+            currentBitrate = maxOf(2_000_000, (currentBitrate * 0.7).toInt())
+            encoder?.setBitrate(currentBitrate)
             encoder?.requestKeyFrame()
         }
     }
@@ -363,7 +394,8 @@ class MirrorService : Service() {
                             settings = Settings(
                                 m.optInt("maxSize", 1600).coerceIn(480, 2560),
                                 m.optInt("bitrate", 12_000_000).coerceIn(1_000_000, 60_000_000),
-                                m.optInt("fps", 60).coerceIn(15, 120))
+                                m.optInt("fps", 60).coerceIn(15, 120),
+                                m.optBoolean("audio", true))
                             attach(c, pcName)
                         } else {
                             c.sendText(JSONObject().put("t", if (code.isEmpty()) "needCode" else "badCode").toString())
@@ -403,7 +435,9 @@ class MirrorService : Service() {
         queue.clear()
         Thread({ writerLoop(c) }, "pm-writer").start()
         sendText(JSONObject().put("t", "ok").put("control", ControlService.instance != null)
-            .put("name", Prefs.deviceName(this)).put("sharing", capturing))
+            .put("name", Prefs.deviceName(this)).put("sharing", capturing)
+            .put("audio", settings.audio && AudioCapture.supported() &&
+                checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED))
         main.post {
             if (projection != null) startEncoding() else askToShare(pcName)
             updateStatus()

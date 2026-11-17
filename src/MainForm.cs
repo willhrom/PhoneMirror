@@ -133,7 +133,7 @@ public class MainForm : Form
         {
             // Allow the player page (on 127.0.0.1) to reach phones on the local Wi-Fi.
             var options = new CoreWebView2EnvironmentOptions(
-                "--disable-features=BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults");
+                "--disable-features=BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults --autoplay-policy=no-user-gesture-required");
             var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Tools.AppDir, "WebView2"), options);
             WebEnv = env;
             await web.EnsureCoreWebView2Async(env);
@@ -221,6 +221,10 @@ public class MainForm : Form
         foreach (var f in appFrames.ToList())
         {
             try { f.Detach(closeMirror: true); f.ForceClose(); } catch { }
+        }
+        foreach (var h in appHosts.ToList())
+        {
+            try { h.Close(); } catch { }
         }
         qrCts?.Cancel();
         try { tracker?.Kill(); } catch { }
@@ -315,6 +319,7 @@ public class MainForm : Form
                 case "disconnect": await Disconnect(Id()); break;
                 case "reconnect": if (Ph() is KnownPhone rp) await Reconnect(rp); break;
                 case "appQr":
+                    sweepUntil = DateTime.Now.AddMinutes(10);   // look harder while the phone app is being set up
                     using (var gen = new QRCodeGenerator())
                     using (var data = gen.CreateQrCode(ApkUrl, QRCodeGenerator.ECCLevel.M))
                         Post(new { type = "appQr", image = "data:image/png;base64," + Convert.ToBase64String(new PngByteQRCode(data).GetGraphic(8)), url = ApkUrl });
@@ -708,8 +713,7 @@ public class MainForm : Form
         if (Online(p)) return true;
         if (p.IsApp)
         {
-            lastScan = DateTime.MinValue;
-            await DiscoverApps();
+            await DiscoverApps(force: true);
             if (Online(p)) return true;
             Toast($"Open Phone Mirror on {p.DisplayName}");
             Log($"Couldn't find {p.DisplayName}. Open the Phone Mirror app on the phone, on the same Wi-Fi.", "warn");
@@ -749,6 +753,8 @@ public class MainForm : Form
     readonly Dictionary<string, AppPhone> appPhones = new();
     readonly HashSet<string> appMirroring = new();
     readonly List<PhoneFrameForm> appFrames = new();
+    readonly List<ScreenHostForm> appHosts = new();   // phone-app mirrors in a plain window
+    DateTime lastMdns = DateTime.MinValue, sweepUntil = DateTime.MinValue;
     DateTime lastScan = DateTime.MinValue;
     bool discovering;
 
@@ -756,25 +762,38 @@ public class MainForm : Form
         p.IsApp && appPhones.TryGetValue(p.Id, out var a) && (DateTime.Now - a.Seen).TotalSeconds < 20;
 
     /// <summary>Finds phones running the Phone Mirror app: network announcements first, then a quick sweep.</summary>
-    async Task DiscoverApps()
+    /// <param name="force">Look everywhere right now (the user is waiting).</param>
+    async Task DiscoverApps(bool force = false)
     {
         if (discovering || closing) return;
         discovering = true;
         try
         {
             bool changed = false;
-            var found = await Mdns.BrowseAsync("_phonemirror._tcp.local", 1200, CancellationToken.None);
-            foreach (var f in found)
+            bool anyApp = cfg.Phones.Any(p => p.IsApp);
+            bool eager = force || DateTime.Now < sweepUntil;   // just set up the app: look harder for a while
+
+            // 1) Network announcements: every 10 s if you use the phone app, else every 30 s.
+            if (eager || (DateTime.Now - lastMdns).TotalSeconds >= (anyApp ? 10 : 30))
             {
-                var id = f.Txt.TryGetValue("id", out var i) ? i : f.Instance;
-                changed |= SeenApp(new AppInfo(id, f.Instance, f.Address.ToString(), f.Port));
+                lastMdns = DateTime.Now;
+                var found = await Mdns.BrowseAsync("_phonemirror._tcp.local", 1200, CancellationToken.None);
+                foreach (var f in found)
+                {
+                    var id = f.Txt.TryGetValue("id", out var i) ? i : f.Instance;
+                    changed |= SeenApp(new AppInfo(id, f.Instance, f.Address.ToString(), f.Port));
+                }
             }
 
-            // Saved phones: ask them directly. Nothing found for a while: sweep the local network.
+            // 2) Saved phones that are offline: one tiny request each (cheap).
             var targets = cfg.Phones.Where(p => p.IsApp && p.LastIp != "" && !AppOnline(p))
                 .Select(p => (Ip: p.LastIp, Port: p.Port > 0 ? p.Port : 8765)).ToList();
+
+            // 3) Sweep the local network only when it can help: while setting up, when asked,
+            //    or (rarely) when a saved phone may have changed address.
             bool noneFresh = appPhones.Values.All(a => (DateTime.Now - a.Seen).TotalSeconds > 10);
-            if (noneFresh && (DateTime.Now - lastScan).TotalSeconds > 30)
+            double sweepEvery = force ? 0 : eager ? 20 : 180;
+            if ((eager || (anyApp && noneFresh)) && (DateTime.Now - lastScan).TotalSeconds > sweepEvery)
             {
                 lastScan = DateTime.Now;
                 targets.AddRange(SubnetHosts().Select(ip => (Ip: ip, Port: 8765)));
@@ -894,13 +913,30 @@ public class MainForm : Form
         int q = ph.Quality ?? cfg.MaxSize;
         int maxSize = q < 0 ? 1600 : q == 0 ? 2400 : q;
         int bitrate = (fps > 60 ? 16 : 12) * 1_000_000;
-        var p = new { url = $"ws://{a.Ip}:{a.Port}/", pcId = cfg.PcId, pcName = Environment.MachineName, name = ph.DisplayName, maxSize, bitrate, fps };
+        var p = new { url = $"ws://{a.Ip}:{a.Port}/", pcId = cfg.PcId, pcName = Environment.MachineName, name = ph.DisplayName, maxSize, bitrate, fps, audio = cfg.Audio };
         var url = $"http://127.0.0.1:{LocalWeb.Port}/mirror.html#" + Uri.EscapeDataString(JsonSerializer.Serialize(p));
 
-        var host = new ScreenHostForm(url) { Log = m => Ui(() => Log(m, "warn")) };
-        var src = new AppSource(host, ph.DisplayName, ShotDir, m => Ui(() => { Log(m, "good"); Toast("Screenshot saved"); }));
         string look = string.IsNullOrEmpty(ph.Look) ? cfg.FrameStyle : ph.Look;
-        if (look == "Off") look = "Black";   // the phone app always shows in a phone frame
+        bool plain = look == "Off";
+        var host = new ScreenHostForm(url, plain, ph.DisplayName, cfg.AlwaysOnTop) { Log = m => Ui(() => Log(m, "warn")) };
+        if (plain)
+        {
+            // Ordinary window: no phone frame or dock (right-click = Back, middle-click = Home).
+            appMirroring.Add(ph.Id);
+            appHosts.Add(host);
+            host.FormClosed += (_, _) => Ui(() =>
+            {
+                appMirroring.Remove(ph.Id);
+                appHosts.Remove(host);
+                PushState();
+                Log($"Closed mirror for {ph.DisplayName}.");
+            });
+            PushState();
+            Log($"Opening {ph.DisplayName} (phone app)…");
+            host.Show();
+            return;
+        }
+        var src = new AppSource(host, ph.DisplayName, ShotDir, m => Ui(() => { Log(m, "good"); Toast("Screenshot saved"); }));
         var pos = ph.WindowX != int.MinValue ? new Point(ph.WindowX, ph.WindowY) : (Point?)null;
         var frame = new PhoneFrameForm(src, look, cfg.AlwaysOnTop, cfg.ButtonStrip, ph.WindowSize, pos)
         {

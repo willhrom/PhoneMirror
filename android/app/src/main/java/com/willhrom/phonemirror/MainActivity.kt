@@ -88,10 +88,24 @@ class MainActivity : Activity() {
 
     // ---------------- actions ----------------
 
+    private var askedAudio = false
+
     private fun requestCapture() {
         if (MirrorService.capturing) return
+        // Phone audio on the laptop needs this once (Android 10+). Mirroring works either way.
+        if (Build.VERSION.SDK_INT >= 29 && !askedAudio &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            askedAudio = true
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 3)
+            return
+        }
         val mpm = getSystemService(MediaProjectionManager::class.java)
         try { startActivityForResult(mpm.createScreenCaptureIntent(), 1) } catch (_: Exception) { }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 3) requestCapture()
     }
 
     @Deprecated("Deprecated in Java")

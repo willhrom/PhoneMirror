@@ -12,6 +12,7 @@ class Packet(val flags: Int, val pts: Long, val data: ByteArray?, val text: Stri
     companion object {
         const val KEY = 1
         const val CONFIG = 2
+        const val AUDIO = 4
     }
 }
 
@@ -50,7 +51,7 @@ class Encoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 5)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10)   // full pictures only every 10 s (or on request)
             // Keep sending frames when the screen is still, so the picture never goes stale.
             setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000L)
             if (tuned) {
@@ -61,6 +62,13 @@ class Encoder(
                 if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LATENCY, 1)
             }
         }
+
+    /** Changes the video bit rate on the fly (adaptive quality). */
+    fun setBitrate(bps: Int) {
+        try {
+            codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps) })
+        } catch (_: Exception) { }
+    }
 
     fun requestKeyFrame() {
         try {

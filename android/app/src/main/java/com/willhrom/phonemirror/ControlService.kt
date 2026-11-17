@@ -194,17 +194,41 @@ class ControlService : AccessibilityService() {
         n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
     }
 
+    /** Where the cursor (or selection) is in the field; end of text if the app doesn't say. */
+    private fun selection(n: AccessibilityNodeInfo, len: Int): Pair<Int, Int> {
+        var a = n.textSelectionStart
+        var b = n.textSelectionEnd
+        if (a < 0 || b < 0 || a > len || b > len) { a = len; b = len }
+        return Pair(minOf(a, b), maxOf(a, b))
+    }
+
+    private fun placeCursor(n: AccessibilityNodeInfo, pos: Int) {
+        val b = Bundle()
+        b.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, pos)
+        b.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, pos)
+        n.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, b)
+    }
+
+    /** Types at the cursor, replacing any selected text. */
     private fun type(s: String) {
         if (s.isEmpty()) return
         val n = focused() ?: return
         if (!n.isEditable) return
-        setText(n, currentText(n) + s)
+        val t = currentText(n)
+        val (a, b) = selection(n, t.length)
+        setText(n, t.substring(0, a) + s + t.substring(b))
+        placeCursor(n, a + s.length)
     }
 
+    /** Deletes the selection, or the character before the cursor. */
     private fun backspace() {
         val n = focused() ?: return
         val t = currentText(n)
-        if (t.isNotEmpty()) setText(n, t.dropLast(1))
+        val (a, b) = selection(n, t.length)
+        if (a == b && a == 0) return
+        val from = if (a == b) a - 1 else a
+        setText(n, t.substring(0, from) + t.substring(b))
+        placeCursor(n, from)
     }
 
     private fun enter() {

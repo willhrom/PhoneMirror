@@ -65,18 +65,24 @@ class ScreenHostForm : Form
 {
     readonly WebView2 web = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Black };
     readonly string url;
-    bool ready;
+    readonly bool plain;
+    bool ready, placed;
 
     public bool IsReady => ready && IsHandleCreated;
     public bool IsFinished { get; private set; }
     public Action<string>? Log;
     public Action? Connected;
 
-    public ScreenHostForm(string url)
+    /// <param name="plain">Show as an ordinary resizable window instead of inside the phone frame.</param>
+    public ScreenHostForm(string url, bool plain = false, string title = "Phone Mirror", bool topMost = false)
     {
         this.url = url;
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
+        this.plain = plain;
+        Text = title + " — Phone Mirror";
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        TopMost = plain && topMost;
+        FormBorderStyle = plain ? FormBorderStyle.Sizable : FormBorderStyle.None;
+        ShowInTaskbar = plain;
         StartPosition = FormStartPosition.Manual;
         Location = new Point(-20000, -20000);
         AutoScaleMode = AutoScaleMode.None;
@@ -128,13 +134,16 @@ class ScreenHostForm : Form
                         ? new Size((int)Math.Round(longSide * (double)w / h), longSide)
                         : new Size(longSide, (int)Math.Round(longSide * (double)h / w));
                     ready = true;
+                    PlacePlain();
                     break;
                 case "needCode":
                     ready = true;   // show the phone so the code can be typed
+                    PlacePlain();
                     break;
                 case "ok":
                     Connected?.Invoke();
                     ready = true;
+                    PlacePlain();
                     break;
                 case "error":
                     Log?.Invoke(m.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "Error");
@@ -145,6 +154,21 @@ class ScreenHostForm : Form
             }
         }
         catch { }
+    }
+
+    /// <summary>Plain window: bring it on screen the first time, sized like the phone.</summary>
+    void PlacePlain()
+    {
+        if (!plain || placed) return;
+        placed = true;
+        var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1366, 728);
+        double aspect = (double)ClientSize.Width / Math.Max(1, ClientSize.Height);
+        int h = (int)(wa.Height * 0.85);
+        int w = (int)Math.Round(h * aspect);
+        if (aspect > 1) { w = (int)(wa.Width * 0.7); h = (int)Math.Round(w / aspect); }
+        ClientSize = new Size(w, h);
+        Location = new Point(wa.Right - Width - 60, wa.Top + (wa.Height - Height) / 2);
+        Activate();
     }
 
     public void Key(string k)
