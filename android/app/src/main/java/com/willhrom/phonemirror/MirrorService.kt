@@ -88,7 +88,8 @@ class MirrorService : Service() {
         override fun run() {
             val enc = encoder ?: return
             val target = settings.bitrate
-            if (dropsSinceCheck == 0 && currentBitrate < target && System.currentTimeMillis() - lastRaise > 5000 && lowDelaySince == 0L) {
+            if (dropsSinceCheck == 0 && currentBitrate < target && System.currentTimeMillis() - lastRaise > 5000 && lowDelaySince == 0L &&
+                recentRate > currentBitrate * 0.6) {
                 currentBitrate = minOf(target, (currentBitrate * 1.2).toInt())
                 enc.setBitrate(currentBitrate)
             }
@@ -370,7 +371,7 @@ class MirrorService : Service() {
         val now = System.currentTimeMillis()
         val enc = encoder ?: return
         when {
-            d > 300 -> {
+            d > 200 -> {
                 // Way behind: stop adding to the backlog (skip frames until a fresh picture), and send much less.
                 if (now - lastCut > 300) {
                     lastCut = now
@@ -383,11 +384,11 @@ class MirrorService : Service() {
                 }
                 lowDelaySince = 0
             }
-            d > 60 -> {
-                if (now - lastCut > 300) {
+            d > 40 -> {
+                if (now - lastCut > 250) {
                     lastCut = now
                     dropsSinceCheck++
-                    currentBitrate = maxOf(minBitrate(), (currentBitrate * 0.85).toInt())
+                    currentBitrate = maxOf(minBitrate(), (currentBitrate * (if (d > 100) 0.7 else 0.85)).toInt())
                     enc.setBitrate(currentBitrate)
                 }
                 lowDelaySince = 0
@@ -395,7 +396,10 @@ class MirrorService : Service() {
             d < 20 -> {
                 if (lowDelaySince == 0L) lowDelaySince = now
                 // Smooth for a while: carefully ask for more quality.
-                if (now - lowDelaySince > 1500 && now - lastRaise > 1000 && currentBitrate < settings.bitrate) {
+                // Only when we were really sending near the current rate: a still screen sends almost nothing,
+                // so low delay then says nothing about the link, and raising would flood it on the next fast scroll.
+                if (now - lowDelaySince > 1500 && now - lastRaise > 1000 && currentBitrate < settings.bitrate &&
+                    recentRate > currentBitrate * 0.6) {
                     lastRaise = now
                     currentBitrate = minOf(settings.bitrate, (currentBitrate * 1.08).toInt())
                     enc.setBitrate(currentBitrate)
@@ -408,11 +412,29 @@ class MirrorService : Service() {
         queue.offer(Packet(0, 0, null, json.toString()))
     }
 
+    /** Small replies (pongs) that go out ahead of any waiting video. */
+    private val replies = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
+    /** Video bytes actually written recently, to tell a busy link from an idle one. */
+    @Volatile private var sentBytes = 0L
+    @Volatile private var sentSince = 0L
+    @Volatile private var recentRate = 0L   // bits per second actually sent over the last ~1 s
+
     private fun writerLoop(c: WsConnection) {
         val header = ByteBuffer.allocate(9)
+        replies.clear()
         while (client === c) {
-            val p = try { queue.poll(500, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { break } ?: continue
+            val p = try { queue.poll(10, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { break }
             try {
+                while (true) c.sendText(replies.poll() ?: break)
+                val now = System.nanoTime()
+                if (sentSince == 0L) sentSince = now
+                if (now - sentSince > 1_000_000_000L) {
+                    recentRate = sentBytes * 8 * 1_000_000_000L / (now - sentSince)
+                    sentBytes = 0; sentSince = now
+                }
+                if (p == null) continue
+                if (p.data != null) sentBytes += p.data.size
                 if (p.text != null) c.sendText(p.text)
                 else if (p.data != null) {
                     header.clear()
@@ -497,7 +519,8 @@ class MirrorService : Service() {
                         // Answer right away (not behind queued video) and report how long video is waiting here.
                         val oldest = queue.peek()
                         val qwait = if (oldest == null) 0L else (System.nanoTime() - oldest.queuedAt) / 1_000_000
-                        try { c.sendText(JSONObject().put("t", "pong").put("ts", m.optDouble("ts")).put("q", qwait).toString()) } catch (_: Exception) { }
+                        // Handed to the writer: the reader must never wait on Wi-Fi, or your taps and scrolls pile up behind it.
+                        replies.offer(JSONObject().put("t", "pong").put("ts", m.optDouble("ts")).put("q", qwait).toString())
                     }
                     "k" -> { }   // keep-awake tick from the laptop (keeps Wi-Fi out of power saving)
                     "cc" -> if (approved) onDelay(m.optDouble("d", 0.0))
