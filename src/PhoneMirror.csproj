@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="ui\index.html" LogicalName="ui.html" />
+    <EmbeddedResource Include="ui\mirror.html" LogicalName="mirror.html" />
   </ItemGroup>
 
 </Project>

@@ -14,8 +14,7 @@ class PhoneFrameForm : Form
 {
     const int MinLong = 300;
 
-    readonly Process proc;
-    readonly Device device;
+    readonly IMirrorSource src;
     readonly Color bodyColor, edgeColor, buttonColor;
     readonly string dockMode;
     readonly int savedLong;
@@ -30,7 +29,6 @@ class PhoneFrameForm : Form
     bool processExited, closeRequested, layingOut;
     DateTime lastInside = DateTime.MinValue;
 
-    public Func<Device, Task>? ScreenshotRequested;
     public Action<string>? Log;
     public Action<int, Point>? SaveWindow;
 
@@ -45,10 +43,9 @@ class PhoneFrameForm : Form
     Rectangle ScreenRect => new(Bezel, Bezel, screenSize.Width, screenSize.Height);
     int LongSide => Math.Max(screenSize.Width, screenSize.Height);
 
-    public PhoneFrameForm(Process proc, Device device, string style, bool topMost, string dockMode, int savedLong, Point? savedPos)
+    public PhoneFrameForm(IMirrorSource src, string style, bool topMost, string dockMode, int savedLong, Point? savedPos)
     {
-        this.proc = proc;
-        this.device = device;
+        this.src = src;
         this.dockMode = dockMode;
         this.savedLong = savedLong;
         this.savedPos = savedPos;
@@ -59,7 +56,7 @@ class PhoneFrameForm : Form
             _ => (Color.FromArgb(22, 22, 25), Color.FromArgb(70, 70, 78), Color.FromArgb(46, 46, 52)),
         };
 
-        Text = $"{device.Model} — Phone Mirror";
+        Text = $"{src.Name} — Phone Mirror";
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
         FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
@@ -72,14 +69,14 @@ class PhoneFrameForm : Form
 
         dock = new DockForm(style, new (string, string, Action?)[]
         {
-            ("", "Back", () => Key(4)),
-            ("", "Home", () => Key(3)),
-            ("", "Recent apps", () => Key(187)),
+            ("", "Back", () => Key("back")),
+            ("", "Home", () => Key("home")),
+            ("", "Recent apps", () => Key("recents")),
             ("", "", null),
-            ("", "Screenshot", () => { _ = ScreenshotRequested?.Invoke(device); }),
-            ("", "Volume down", () => Key(25)),
-            ("", "Volume up", () => Key(24)),
-            ("", "Power / lock", () => Key(26)),
+            ("", "Screenshot", () => { _ = src.Screenshot(); }),
+            ("", "Volume down", () => Key("voldown")),
+            ("", "Volume up", () => Key("volup")),
+            ("", "Power / lock", () => Key("power")),
             ("", "", null),
             ("", "Smaller", () => Zoom(1 / 1.15)),
             ("", "Bigger", () => Zoom(1.15)),
@@ -100,9 +97,8 @@ class PhoneFrameForm : Form
     {
         for (int i = 0; i < 120 && child == IntPtr.Zero; i++)
         {
-            if (proc.HasExited) return false;
-            proc.Refresh();
-            child = proc.MainWindowHandle;
+            if (src.HasExited) return false;
+            child = src.FindWindow();
             if (child == IntPtr.Zero) await Task.Delay(150);
         }
         if (child == IntPtr.Zero) { Log?.Invoke("Phone frame: couldn't find the mirror window."); return false; }
@@ -427,9 +423,9 @@ class PhoneFrameForm : Form
 
     // ================= buttons =================
 
-    void Key(int code)
+    void Key(string key)
     {
-        _ = Tools.AdbAsync(5000, "-s", device.Serial, "shell", "input", "keyevent", code.ToString());
+        src.Key(key);
         FocusPhone();
     }
 
@@ -482,7 +478,7 @@ class PhoneFrameForm : Form
                 dock.Hide();
                 SaveWindow?.Invoke(LongSide, Location);
                 PostMessage(child, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero);
-                _ = Task.Delay(3000).ContinueWith(_ => { try { if (!proc.HasExited) proc.Kill(); } catch { } });
+                _ = Task.Delay(3000).ContinueWith(_ => { try { if (!src.HasExited) src.Kill(); } catch { } });
             }
             return;
         }
@@ -526,6 +522,52 @@ class PhoneFrameForm : Form
     [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
     [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
+}
+
+/// <summary>What the phone frame shows: a USB debugging (scrcpy) mirror or a phone-app mirror.</summary>
+interface IMirrorSource
+{
+    string Name { get; }
+    bool HasExited { get; }
+    /// <summary>The video window, or zero until it's ready.</summary>
+    IntPtr FindWindow();
+    /// <summary>back, home, recents, power, volup, voldown</summary>
+    void Key(string key);
+    Task Screenshot();
+    void Kill();
+}
+
+/// <summary>Mirror through USB debugging: a scrcpy process.</summary>
+class ScrcpySource : IMirrorSource
+{
+    readonly Process proc;
+    readonly Device device;
+    readonly Func<Device, Task> screenshot;
+
+    public ScrcpySource(Process proc, Device device, string name, Func<Device, Task> screenshot)
+    {
+        this.proc = proc;
+        this.device = device;
+        this.screenshot = screenshot;
+        Name = name;
+    }
+
+    public string Name { get; }
+    public bool HasExited { get { try { return proc.HasExited; } catch { return true; } } }
+
+    public IntPtr FindWindow()
+    {
+        try { proc.Refresh(); return proc.MainWindowHandle; } catch { return IntPtr.Zero; }
+    }
+
+    public void Key(string key)
+    {
+        int code = key switch { "back" => 4, "home" => 3, "recents" => 187, "power" => 26, "volup" => 24, "voldown" => 25, _ => 0 };
+        if (code != 0) _ = Tools.AdbAsync(5000, "-s", device.Serial, "shell", "input", "keyevent", code.ToString());
+    }
+
+    public Task Screenshot() => screenshot(device);
+    public void Kill() { try { proc.Kill(); } catch { } }
 }
 
 /// <summary>

@@ -16,7 +16,9 @@ class KnownPhone
     public int WindowX { get; set; } = int.MinValue;
     public int WindowY { get; set; } = int.MinValue;
     public bool NoH265 { get; set; }
-    public bool NoHighProfile { get; set; }      // encoder rejects the H.264 High profile             // phone can't encode H.265: use H.264 over Wi-Fi
+    public bool NoHighProfile { get; set; }      // encoder rejects the H.264 High profile
+    public bool IsApp { get; set; }              // connects through the Phone Mirror phone app (no debugging)
+    public int Port { get; set; }                // phone app's port             // phone can't encode H.265: use H.264 over Wi-Fi
 
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Model : Name;
 }
@@ -45,6 +47,8 @@ class Settings
     public bool TrayTipShown { get; set; }
 
     public List<KnownPhone> Phones { get; set; } = new();
+    /// <summary>This PC's identity for the phone app (so the phone remembers it).</summary>
+    public string PcId { get; set; } = "";
 
     static string FilePath => Path.Combine(Tools.AppDir, "settings.json");
 

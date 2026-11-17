@@ -5,7 +5,7 @@ using System.Text;
 
 namespace PhoneMirror;
 
-record MdnsService(string Instance, string Type, IPAddress Address, int Port)
+record MdnsService(string Instance, string Type, IPAddress Address, int Port, IReadOnlyDictionary<string, string> Txt)
 {
     public string Endpoint => $"{Address}:{Port}";
 }
@@ -131,6 +131,7 @@ static class Mdns
 
         var srv = new List<(string Name, string Host, int Port)>();
         var a = new Dictionary<string, IPAddress>(StringComparer.OrdinalIgnoreCase);
+        var txt = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < total && pos + 10 <= p.Length; i++)
         {
             var name = ReadName(p, ref pos);
@@ -146,17 +147,34 @@ static class Mdns
             {
                 a[name] = new IPAddress(p.AsSpan(rd, 4).ToArray());
             }
+            else if (type == 16)
+            {
+                var kv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                int q = rd, end = rd + rdlen;
+                while (q < end)
+                {
+                    int len = p[q++];
+                    if (len == 0 || q + len > end) { q += len; continue; }
+                    var item = Encoding.UTF8.GetString(p, q, len);
+                    q += len;
+                    int eq = item.IndexOf('=');
+                    if (eq > 0) kv[item[..eq]] = item[(eq + 1)..];
+                }
+                txt[name] = kv;
+            }
         }
 
         foreach (var (name, host, port) in srv)
         {
-            int dot = name.IndexOf('.');
+            // "<instance>._service._tcp.local" — the instance itself may contain dots
+            int dot = name.IndexOf("._", StringComparison.Ordinal);
             if (dot <= 0) continue;
             var instance = name[..dot];
             var type = name[(dot + 1)..];
             var addr = a.TryGetValue(host, out var ip) ? ip : from;
             if (addr.IsIPv4MappedToIPv6) addr = addr.MapToIPv4();
-            list.Add(new MdnsService(instance, type, addr, port));
+            list.Add(new MdnsService(instance, type, addr, port,
+                txt.TryGetValue(name, out var t) ? t : new Dictionary<string, string>()));
         }
         return list;
     }

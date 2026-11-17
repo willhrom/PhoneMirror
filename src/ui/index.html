@@ -64,6 +64,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px;
 .ghost.big{padding:10px 16px;font-weight:600;color:var(--text);background:var(--s2)}
 .danger{border:1px solid #4a2326;background:#22121466;color:#fca5a5;border-radius:10px;padding:8px 14px}
 .danger:hover{background:#3a1a1d}
+.hint.muted{color:var(--dim)}
 .hint{margin-top:8px;color:var(--warn);font-size:12.5px}
 .acts{display:flex;align-items:center;gap:8px}
 .icon-btn{width:38px;height:38px;display:grid;place-items:center;border-radius:11px;border:1px solid var(--line);background:var(--s1);color:var(--muted)}
@@ -90,7 +91,9 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px;
 @keyframes pulse{0%{transform:scale(.6);opacity:1}100%{transform:scale(1.8);opacity:0}}
 
 /* add tiles */
-.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:6px}
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:6px}
+.tile.feature{border-color:#33406a;background:linear-gradient(160deg,#151b2e,var(--s1))}
+.badge{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:99px;background:#1f2b4d;color:#a9bcff;font-size:11px;font-weight:600;vertical-align:1px}
 .tile{display:flex;flex-direction:column;align-items:flex-start;gap:8px;text-align:left;padding:16px;border-radius:16px;border:1px solid var(--line);background:var(--s1)}
 .tile:hover{background:var(--s2);border-color:var(--line2)}
 .tile .ic{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:var(--s3);color:#a9bcff}
@@ -155,6 +158,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px;
 .qrbox .qr{width:220px;height:220px;border-radius:16px;background:#fff;padding:10px;display:grid;place-items:center}
 .qrbox img{width:100%;height:100%;image-rendering:pixelated}
 .qrbox img:not([src]){visibility:hidden}
+#m-getapp .qr{width:190px;height:190px}
 .status{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:var(--s2);font-size:13px;margin-bottom:14px}
 .spin{width:16px;height:16px;border-radius:50%;border:2px solid #3b4460;border-top-color:var(--accent);animation:rot .8s linear infinite;flex:none}
 @keyframes rot{to{transform:rotate(360deg)}}
@@ -173,7 +177,7 @@ table.sc td:last-child{text-align:right}
 .bar div{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .2s}
 .toast{position:fixed;left:50%;bottom:64px;transform:translateX(-50%);background:var(--s3);border:1px solid var(--line2);padding:10px 16px;border-radius:12px;font-size:13px;z-index:30;animation:pop .2s;box-shadow:0 12px 30px -10px #000}
 
-@media (max-width:900px){ main{grid-template-columns:minmax(0,1fr) 300px} .tiles{grid-template-columns:1fr 1fr} }
+@media (max-width:900px){ main{grid-template-columns:minmax(0,1fr) 300px} }
 </style>
 </head>
 <body>
@@ -197,6 +201,10 @@ table.sc td:last-child{text-align:right}
 
       <div class="h" style="margin-top:22px"><h2>Add a phone wirelessly</h2></div>
       <div class="tiles">
+        <button class="tile feature" onclick="openModal('getapp')">
+          <span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M12 7v7M9 11l3 3 3-3"/></svg></span>
+          <span class="t">Phone Mirror app <span class="badge">Easiest</span></span><span class="d">No developer settings. Install it on your phone and tap Share.</span>
+        </button>
         <button class="tile" onclick="openModal('qr')">
           <span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20.5 14v.01M14 20.5h.01M17.5 20.5h3v-3"/></svg></span>
           <span class="t">Scan QR code</span><span class="d">No cable needed. Android 11 or newer.</span>
@@ -287,6 +295,23 @@ table.sc td:last-child{text-align:right}
       <button class="ghost" onclick="closeModal();openModal('code')">Use a code instead</button>
       <button class="ghost" onclick="closeModal()">Cancel</button>
     </div>
+  </div>
+</div>
+
+<!-- Get the phone app -->
+<div class="back hidden" id="m-getapp" data-close>
+  <div class="modal">
+    <h3>Get the Phone Mirror app</h3>
+    <p class="lead">No developer settings needed. Your phone and this laptop just need the same Wi-Fi.</p>
+    <div class="qrbox"><div class="qr"><img id="appQrImg" alt=""></div></div>
+    <ol>
+      <li><b>Scan this</b> with your phone's camera to download the app.</li>
+      <li>Open the downloaded file to install it. If asked, allow installs from your browser.</li>
+      <li>Open <b>Phone Mirror</b> and tap <b>Share screen</b>. Your phone appears here under My phones.</li>
+      <li>To use your mouse and keyboard on the phone, tap <b>Turn on in Accessibility</b> in the app.</li>
+    </ol>
+    <p class="lead" style="font-size:12.5px;margin:0">Or open <span id="appUrl" style="color:var(--text);-webkit-user-select:text;user-select:text"></span> on the phone.</p>
+    <div class="mfoot" style="margin-top:14px"><button class="primary" onclick="closeModal()">Done</button></div>
   </div>
 </div>
 
@@ -393,6 +418,7 @@ const IC = {
   gear:'<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
   refresh:'<svg class="i" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>',
   clock:'<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  phone:'<svg class="i" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18h2"/></svg>',
   alert:'<svg class="i" viewBox="0 0 24 24"><path d="M12 3.5l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>',
 };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -418,7 +444,7 @@ function render(){
       <div><h3>${S.engine.ready ? 'Plug in your phone' : 'Getting things ready…'}</h3>
         <p>It opens here automatically and is saved to My phones. First time? Turn on USB debugging. It takes a minute.</p>
         <div class="steps"><span class="step"><b>1</b>Turn on USB debugging</span><span class="step"><b>2</b>Plug in</span><span class="step"><b>3</b>Tap “Allow”</span></div>
-        <div class="links"><button class="primary" onclick="openModal('help')">Show me how</button><button class="ghost" onclick="openModal('tips')">Phone not showing up?</button></div>
+        <div class="links"><button class="primary" onclick="openModal('help')">Show me how</button><button class="ghost" onclick="openModal('getapp')">Use the phone app instead</button><button class="ghost" onclick="openModal('tips')">Phone not showing up?</button></div>
       </div></div>`;
   } else {
     const on = phones.filter(p => p.online).length;
@@ -428,21 +454,23 @@ function render(){
       const st = p.status === 'ready' ? (p.mirroring ? ['live','Mirroring'] : ['good','Ready'])
                : p.status === 'unauthorized' ? ['warn','Waiting for “Allow”']
                : p.status === 'offline' ? ['bad','Offline'] : ['off', p.lastSeen ? 'Last seen ' + p.lastSeen : 'Not connected'];
-      const conns = (p.usb ? `<span class="chip">${IC.plug}USB</span>` : '') + (p.wifi ? `<span class="chip">${IC.wifi}Wi-Fi</span>` : '');
+      const conns = p.app ? `<span class="chip">${IC.phone}Phone app</span>`
+        : (p.usb ? `<span class="chip">${IC.plug}USB</span>` : '') + (p.wifi ? `<span class="chip">${IC.wifi}Wi-Fi</span>` : '');
       const stIcon = st[0]==='good'||st[0]==='live' ? IC.check : st[0]==='off' ? IC.clock : IC.alert;
       const hint = p.status === 'unauthorized' ? '<div class="hint">Unlock your phone and tap “Allow” on the USB debugging prompt.</div>'
-                 : p.status === 'offline' ? '<div class="hint">Unplug and plug it back in.</div>' : '';
+                 : p.status === 'offline' ? '<div class="hint">Unplug and plug it back in.</div>'
+               : p.app && !p.online ? '<div class="hint muted">Open Phone Mirror on the phone (same Wi-Fi) and it shows up here.</div>' : '';
       const main = p.online
         ? `<button class="primary" onclick="post('mirror',{id:'${id}'})">${IC.play}Mirror</button>`
         : p.saved && p.status === 'away'
-          ? `<button class="ghost big" onclick="post('reconnect',{id:'${id}'})">${IC.refresh}Reconnect</button>`
+          ? `<button class="ghost big" onclick="post('reconnect',{id:'${id}'})">${IC.refresh}${p.app ? 'Find it' : 'Reconnect'}</button>`
           : `<button class="primary" disabled>${IC.play}Mirror</button>`;
       return `<div class="dev ${p.online ? 'ready' : 'off'}" ondblclick="post('mirror',{id:'${id}'})">
         <div class="mini"><div></div></div>
         <div style="min-width:0"><div class="model">${esc(p.name)}</div>${p.nickname ? `<div class="sub2">${esc(p.model)}</div>` : ''}
           <div class="chips">${conns}<span class="chip ${st[0]}">${stIcon}${esc(st[1])}</span></div>${hint}</div>
         <div class="acts">
-          ${p.online ? `<button class="icon-btn" title="Screenshot" onclick="post('screenshot',{id:'${id}'})">${IC.cam}</button>` : ''}
+          ${p.online && !p.app ? `<button class="icon-btn" title="Screenshot" onclick="post('screenshot',{id:'${id}'})">${IC.cam}</button>` : ''}
           ${p.usb && !p.wifi ? `<button class="icon-btn" title="Turn on Wi-Fi for this phone" onclick="post('enableWifi',{id:'${id}'})">${IC.wifi}</button>` : ''}
           ${p.wifi ? `<button class="icon-btn" title="Disconnect Wi-Fi" onclick="post('disconnect',{id:'${id}'})">${IC.x}</button>` : ''}
           ${p.saved ? `<button class="icon-btn" title="Phone settings" onclick="openPhone('${id}')">${IC.gear}</button>` : ''}
@@ -491,6 +519,7 @@ function openModal(id){
   if (id === 'qr') { $('qrImg').removeAttribute('src'); setQrStatus('Making a code…', 'wait'); post('qrStart'); }
   if (id === 'ip') { $('ipAddr').value = (S && S.settings.lastIp) || ''; setTimeout(() => $('ipAddr').focus(), 50); }
   if (id === 'code') setTimeout(() => $('codeAddr').focus(), 50);
+  if (id === 'getapp') { if (!$('appQrImg').getAttribute('src')) post('appQr'); }
 }
 function closeModal(silent){
   if (!openId) return;
@@ -559,6 +588,7 @@ function handle(m){
     case 'qr': if (openId === 'qr') { $('qrImg').src = m.image; setQrStatus('Waiting for your phone…', 'wait'); } break;
     case 'qrStatus': if (openId === 'qr') { setQrStatus(m.text, m.level); if (m.done) setTimeout(() => { if (openId === 'qr') closeModal(); }, 1400); } break;
     case 'toast': toast(m.text); break;
+    case 'appQr': $('appQrImg').src = m.image; $('appUrl').textContent = 'willhrom.github.io/PhoneMirror'; break;
     case 'open': openModal(m.name); break;
   }
 }
@@ -570,6 +600,7 @@ else {
     phones: location.hash === '#empty' ? [] : [
       {id:'abc',name:'Will’s Pixel',nickname:'Will’s Pixel',model:'Pixel 8',saved:true,online:true,status:'ready',usb:true,wifi:true,mirroring:true,lastSeen:'today at 4:20 PM',lastIp:'192.168.1.20',look:'',quality:null,customWindow:true},
       {id:'xyz',name:'Galaxy S23',nickname:'',model:'Galaxy S23',saved:false,online:false,status:'unauthorized',usb:false,wifi:false,mirroring:false,lastSeen:'',lastIp:'',look:'',quality:null},
+      {id:'app:1',name:'Pixel 9',nickname:'',model:'Pixel 9',saved:true,online:true,status:'ready',usb:false,wifi:false,app:true,mirroring:false,lastSeen:'today at 8:40 PM',lastIp:'192.168.1.44',look:'',quality:null},
       {id:'tab',name:'Galaxy Tab S9',nickname:'',model:'Galaxy Tab S9',saved:true,online:false,status:'away',usb:false,wifi:false,mirroring:false,lastSeen:'yesterday',lastIp:'192.168.1.31',look:'Silver',quality:1280}]});
   ['Mirroring engine ready (scrcpy v3.3).','Pixel 8 connected over USB.','Wi-Fi ready for Pixel 8 (192.168.1.20). You can unplug anytime.','Opening Pixel 8 (USB)…']
     .forEach((t,i) => addLog({time:'15:3'+i+':0'+i, text:t, level: i===2?'good':''}));

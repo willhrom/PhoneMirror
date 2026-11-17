@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +24,56 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PhoneMirror
+          name: windows
           path: out/PhoneMirror.exe
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build PhoneMirror.apk
+        working-directory: android
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: 1.0.${{ github.run_number }}
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleRelease --no-daemon --console=plain 2>&1 | tee build.log
+          cp app/build/outputs/apk/release/app-release.apk ../PhoneMirror.apk
+
+      - name: Report build errors
+        if: failure()
+        working-directory: android
+        shell: bash
+        run: |
+          grep -E "^e: |error:|What went wrong|> " build.log | head -40 | while IFS= read -r line; do
+            echo "::error::${line//%/%25}"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: PhoneMirror.apk
+
+  release:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -33,9 +81,12 @@ jobs:
           tag_name: v1.0.${{ github.run_number }}
           name: Phone Mirror 1.0.${{ github.run_number }}
           make_latest: true
-          files: out/PhoneMirror.exe
+          files: |
+            dist/PhoneMirror.exe
+            dist/PhoneMirror.apk
           body: |
-            Download **PhoneMirror.exe** below and double-click it. No install needed.
-
-            First launch downloads the mirroring engine (scrcpy) automatically.
+            **Laptop:** download **PhoneMirror.exe** and double-click it. No install needed.
             If Windows SmartScreen warns you, click **More info → Run anyway** (the app isn't code-signed).
+
+            **Phone (optional, no developer settings):** open this page on your phone and download **PhoneMirror.apk**.
+            Open it to install. If asked, allow installs from your browser.

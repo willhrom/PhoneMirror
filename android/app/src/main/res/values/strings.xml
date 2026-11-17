@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Phone Mirror</string>
+    <string name="control_label">Phone Mirror control</string>
+    <string name="accessibility_description">Lets Phone Mirror on your computer tap, swipe, scroll and type on this phone while you are mirroring it. Nothing is collected or sent anywhere else.</string>
+</resources>
