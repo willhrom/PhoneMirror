@@ -230,8 +230,17 @@ function playPcm(bytes){
   if (actx.state === 'suspended') actx.resume();
   const i16 = new Int16Array(bytes), n = i16.length >> 1;
   if (!n) return;
-  const ab = actx.createBuffer(2, n, 48000), L = ab.getChannelData(0), R = ab.getChannelData(1);
+  const L = new Float32Array(n), R = new Float32Array(n);
   for (let i = 0; i < n; i++) { L[i] = i16[2*i] / 32768; R[i] = i16[2*i+1] / 32768; }
+  playPlanes([L, R], n);
+}
+function playPlanes(planes, n){
+  if (!P.audio || !n) return;
+  if (!actx) actx = new AudioContext({ sampleRate:48000, latencyHint:'interactive' });
+  if (actx.state === 'suspended') actx.resume();
+  const ab = actx.createBuffer(2, n, 48000);
+  ab.copyToChannel(planes[0], 0);
+  ab.copyToChannel(planes[1] || planes[0], 1);
   const src = actx.createBufferSource();
   src.buffer = ab;
   src.connect(actx.destination);
@@ -241,15 +250,55 @@ function playPcm(bytes){
   nextT += ab.duration;
 }
 
+// Opus audio (compressed on the phone): decode, then play through the same scheduler.
+let opusDec = null;
+function playOpus(buf){
+  if (!P.audio || !('AudioDecoder' in window)) return;
+  if (!opusDec) {
+    opusDec = new AudioDecoder({
+      output: data => {
+        try {
+          const n = data.numberOfFrames, ch = Math.min(2, data.numberOfChannels);
+          const planes = [];
+          for (let c = 0; c < ch; c++) { const a = new Float32Array(n); data.copyTo(a, { planeIndex: c, format: 'f32-planar' }); planes.push(a); }
+          data.close();
+          playPlanes(planes, n);
+        } catch (e) { try { data.close(); } catch (x) {} }
+      },
+      error: () => { opusDec = null; }
+    });
+    opusDec.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
+  }
+  const dv = new DataView(buf);
+  const pts = Number(dv.getBigUint64(1));
+  try { opusDec.decode(new EncodedAudioChunk({ type: 'key', timestamp: pts, data: new Uint8Array(buf, 9) })); } catch (e) {}
+}
+
+// ---------- delivery delay -> feedback to the phone ----------
+// Each frame carries the phone's clock. "arrival - phone time" is constant when the link keeps up;
+// when it grows, frames are queuing somewhere. The phone uses this to send less before lag builds up.
+let owdSamples = [], owdNow = 0, owdMin = Infinity;
+function noteArrival(ptsUs){
+  const owd = performance.now() - ptsUs / 1000;
+  const t = performance.now();
+  owdSamples.push([t, owd]);
+  while (owdSamples.length && owdSamples[0][0] < t - 10000) owdSamples.shift();
+  owdMin = Math.min(...owdSamples.map(x => x[1]));
+  owdNow = owd - owdMin;
+}
+setInterval(() => { if (ws && ws.readyState === 1 && owdSamples.length) send({ t:'cc', d: Math.round(owdNow) }); }, 200);
+
 function onVideo(buf){
   const flags0 = new DataView(buf).getUint8(0);
   if (flags0 & 4) { playPcm(buf.slice(9)); return; }
+  if (flags0 & 8) { playOpus(buf); return; }
   if (!decoder || decoder.state !== 'configured') return;
   stats.bytes += buf.byteLength;
   const dv = new DataView(buf);
   const flags = dv.getUint8(0);
   const pts = Number(dv.getBigUint64(1));
   const data = new Uint8Array(buf, 9);
+  if (!(flags & 2)) noteArrival(pts);
   if (flags & 2) { cfg = patchConfig(data.slice()); return; }   // tell the decoder: show frames right away
   const key = (flags & 1) !== 0;
   if (needKey && !key) return;
@@ -379,7 +428,7 @@ setInterval(() => {
   const el = $('stats');
   if (!el.classList.contains('hidden'))
     el.textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbps · ${vw}×${vh}\n` +
-      `network ${Math.round(rtt)} ms round trip · phone queue ${phoneQueue} ms · decode ${Math.round(decAvg)} ms (${hwMode === 'prefer-hardware' ? 'hw' : 'sw'})`;
+      `network ${Math.round(rtt)} ms round trip · extra delay ${Math.round(owdNow)} ms · decode ${Math.round(decAvg)} ms (${hwMode === 'prefer-hardware' ? 'hw' : 'sw'})`;
   send({ t:'ping', ts: performance.now() });
   stats.frames = 0; stats.bytes = 0;
 }, 1000);

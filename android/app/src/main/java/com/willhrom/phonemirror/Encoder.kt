@@ -14,7 +14,8 @@ class Packet(val flags: Int, val pts: Long, val data: ByteArray?, val text: Stri
     companion object {
         const val KEY = 1
         const val CONFIG = 2
-        const val AUDIO = 4
+        const val AUDIO = 4      // raw PCM
+        const val OPUS = 8       // Opus-compressed audio
     }
 }
 

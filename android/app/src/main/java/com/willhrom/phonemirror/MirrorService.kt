@@ -86,7 +86,7 @@ class MirrorService : Service() {
         override fun run() {
             val enc = encoder ?: return
             val target = settings.bitrate
-            if (dropsSinceCheck == 0 && currentBitrate < target) {
+            if (dropsSinceCheck == 0 && currentBitrate < target && System.currentTimeMillis() - lastRaise > 5000 && lowDelaySince == 0L) {
                 currentBitrate = minOf(target, (currentBitrate * 1.2).toInt())
                 enc.setBitrate(currentBitrate)
             }
@@ -331,7 +331,7 @@ class MirrorService : Service() {
         // tiny audio packets are queued). Then send less, at most every 0.5 s.
         val oldest = queue.peek()
         val waitMs = if (oldest == null) 0L else (System.nanoTime() - oldest.queuedAt) / 1_000_000
-        if (p.text == null && p.flags != Packet.AUDIO && waitMs > 60) {
+        if (p.text == null && p.flags != Packet.AUDIO && p.flags != Packet.OPUS && waitMs > 60) {
             val now = System.currentTimeMillis()
             if (now - lastCut > 500) {
                 lastCut = now
@@ -354,8 +354,53 @@ class MirrorService : Service() {
         }
     }
 
-    /** Lowest quality worth sending: below this, encoders start skipping frames. */
-    private fun minBitrate() = minOf(settings.bitrate, 3_000_000)
+    /** Lowest quality we go to on a slow link (below this, the picture gets too blocky). */
+    private fun minBitrate() = minOf(settings.bitrate, 1_500_000)
+
+    @Volatile private var lowDelaySince = 0L
+    @Volatile private var lastRaise = 0L
+
+    /**
+     * Feedback from the laptop: how much later than usual frames are arriving (queueing delay).
+     * Rising delay = the link is carrying less than we send: back off before a backlog builds.
+     */
+    private fun onDelay(d: Double) {
+        val now = System.currentTimeMillis()
+        val enc = encoder ?: return
+        when {
+            d > 300 -> {
+                // Way behind: stop adding to the backlog (skip frames until a fresh picture), and send much less.
+                if (now - lastCut > 300) {
+                    lastCut = now
+                    dropsSinceCheck++
+                    needKey = true
+                    queue.removeIf { it.text == null && it.flags != Packet.CONFIG }
+                    currentBitrate = maxOf(minBitrate(), (currentBitrate * 0.6).toInt())
+                    enc.setBitrate(currentBitrate)
+                    enc.requestKeyFrame()
+                }
+                lowDelaySince = 0
+            }
+            d > 60 -> {
+                if (now - lastCut > 300) {
+                    lastCut = now
+                    dropsSinceCheck++
+                    currentBitrate = maxOf(minBitrate(), (currentBitrate * 0.85).toInt())
+                    enc.setBitrate(currentBitrate)
+                }
+                lowDelaySince = 0
+            }
+            d < 20 -> {
+                if (lowDelaySince == 0L) lowDelaySince = now
+                // Smooth for a while: carefully ask for more quality.
+                if (now - lowDelaySince > 1500 && now - lastRaise > 1000 && currentBitrate < settings.bitrate) {
+                    lastRaise = now
+                    currentBitrate = minOf(settings.bitrate, (currentBitrate * 1.08).toInt())
+                    enc.setBitrate(currentBitrate)
+                }
+            }
+        }
+    }
 
     private fun sendText(json: JSONObject) {
         queue.offer(Packet(0, 0, null, json.toString()))
@@ -408,7 +453,8 @@ class MirrorService : Service() {
 
     private fun handleSocket(sock: Socket) {
         sock.tcpNoDelay = true
-        try { sock.sendBufferSize = 256 * 1024 } catch (_: Exception) { }
+        // Small on purpose: a big buffer hides a backlog (that's how delay crept up to half a second).
+        try { sock.sendBufferSize = 64 * 1024 } catch (_: Exception) { }
         val c = WsConnection(sock)
         try {
             if (!c.handshake { info() }) { c.close(); return }
@@ -445,6 +491,7 @@ class MirrorService : Service() {
                         try { c.sendText(JSONObject().put("t", "pong").put("ts", m.optDouble("ts")).put("q", qwait).toString()) } catch (_: Exception) { }
                     }
                     "k" -> { }   // keep-awake tick from the laptop (keeps Wi-Fi out of power saving)
+                    "cc" -> if (approved) onDelay(m.optDouble("d", 0.0))
                     "quality" -> if (approved) {
                         // The laptop's phone window changed size: re-encode at a size that fits it.
                         val s = settings
