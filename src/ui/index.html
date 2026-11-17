@@ -456,7 +456,7 @@ function render(){
       const st = p.status === 'ready' ? (p.mirroring ? ['live','Mirroring'] : ['good','Ready'])
                : p.status === 'unauthorized' ? ['warn','Waiting for “Allow”']
                : p.status === 'offline' ? ['bad','Offline'] : ['off', p.lastSeen ? 'Last seen ' + p.lastSeen : 'Not connected'];
-      const conns = p.app ? `<span class="chip">${IC.phone}Phone app</span>`
+      const conns = p.app ? `<span class="chip">${IC.phone}Phone app</span>` + (p.appOutdated ? `<span class="chip warn" title="The phone app updates itself when you're not mirroring, or tap Update in the app">${IC.refresh}Update ready</span>` : '')
         : (p.usb ? `<span class="chip">${IC.plug}USB</span>` : '') + (p.wifi ? `<span class="chip">${IC.wifi}Wi-Fi</span>` : '');
       const stIcon = st[0]==='good'||st[0]==='live' ? IC.check : st[0]==='off' ? IC.clock : IC.alert;
       const hint = p.status === 'unauthorized' ? '<div class="hint">Unlock your phone and tap “Allow” on the USB debugging prompt.</div>'

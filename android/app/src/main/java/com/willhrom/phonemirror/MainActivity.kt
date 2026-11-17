@@ -47,6 +47,9 @@ class MainActivity : Activity() {
     private lateinit var bgSwitch: Switch
     private lateinit var bootSwitch: Switch
     private lateinit var batteryButton: Button
+    private lateinit var updateText: TextView
+    private lateinit var updateButton: Button
+    private lateinit var autoSwitch: Switch
     private lateinit var directCard: LinearLayout
     private lateinit var directText: TextView
     private lateinit var directButton: Button
@@ -71,6 +74,16 @@ class MainActivity : Activity() {
 
     private fun handleIntent(i: Intent?) {
         if (i?.action == MirrorService.ACTION_SHARE) requestCapture()
+        if (i?.action == AppUpdater.ACTION_UPDATE) startUpdate()
+    }
+
+    private fun startUpdate() {
+        if (!AppUpdater.canInstall(this)) {
+            AppUpdater.status = "Allow Phone Mirror to install updates, then come back"
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+        } else if (AppUpdater.updateAvailable(this)) AppUpdater.install(this)
+        else AppUpdater.check(this, force = true, installIfAuto = false)
+        refresh()
     }
 
     override fun onResume() {
@@ -79,6 +92,8 @@ class MainActivity : Activity() {
             try { MirrorService.startIdle(this) } catch (_: Exception) { }
         }
         MirrorService.listener = { runOnUiThread { refresh() } }
+        AppUpdater.listener = { runOnUiThread { refresh() } }
+        AppUpdater.check(this)
         MirrorService.onShareRequest = { runOnUiThread { requestCapture() } }
         refresh()
     }
@@ -87,6 +102,7 @@ class MainActivity : Activity() {
         super.onPause()
         MirrorService.listener = null
         MirrorService.onShareRequest = null
+        AppUpdater.listener = null
     }
 
     // ---------------- actions ----------------
@@ -156,6 +172,22 @@ class MainActivity : Activity() {
         bgSwitch.isChecked = Prefs.background(this)
         bootSwitch.isChecked = Prefs.startAtBoot(this)
         bootSwitch.isEnabled = Prefs.background(this)
+        // updates
+        val avail = AppUpdater.updateAvailable(this)
+        val canInstall = AppUpdater.canInstall(this)
+        updateText.text = AppUpdater.status ?: when {
+            avail -> "Version ${AppUpdater.latestName} is ready (you have ${AppUpdater.installedName(this)})"
+            AppUpdater.latestVersion > 0 -> "Version ${AppUpdater.installedName(this)}: up to date"
+            else -> "Version ${AppUpdater.installedName(this)}"
+        }
+        updateButton.isEnabled = !AppUpdater.busy
+        updateButton.text = when {
+            !canInstall -> "Allow automatic updates"
+            avail -> "Update now"
+            else -> "Check for updates"
+        }
+        autoSwitch.isChecked = AppUpdater.auto(this)
+
         val laptop = Prefs.lastLaptop(this)
         directCard.visibility = if (laptop == null) View.GONE else View.VISIBLE
         if (laptop != null) {
@@ -343,6 +375,18 @@ class MainActivity : Activity() {
         }
         bgCard.addView(batteryButton)
         root.addView(bgCard)
+
+        // updates
+        val upCard = cardView()
+        upCard.addView(label("UPDATES", 12f, muted, bold = true))
+        updateText = label("", 14f, muted).apply { setPadding(0, dp(6), 0, 0) }
+        upCard.addView(updateText)
+        autoSwitch = switchRow(upCard, "Update automatically", "Installs new versions when you're not mirroring") { on ->
+            AppUpdater.setAuto(this, on)
+        }
+        updateButton = smallButton("Check for updates") { AppUpdater.status = null; startUpdate() }
+        upCard.addView(updateButton)
+        root.addView(upCard)
 
         root.addView(label("Your phone and laptop need to be on the same Wi-Fi. On the laptop, open Phone Mirror. " +
             "This phone shows up under My phones.", 13f, muted).apply { setPadding(dp(4), dp(18), dp(4), 0) })

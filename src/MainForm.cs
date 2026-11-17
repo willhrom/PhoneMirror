@@ -712,6 +712,7 @@ public class MainForm : Form
                 wifi = conns.Any(c => c.Ready && c.Wireless),
                 mirroring = isApp ? appMirroring.Contains(id) : conns.Any(c => mirroring.Contains(c.Serial)),
                 app = isApp,
+                appOutdated = isApp && p!.AppVersion > 0 && p.AppVersion < Updater.Current.Build,
                 lastSeen = p == null ? "" : Seen(p.LastSeen),
                 lastIp = p?.LastIp ?? "",
                 look = p?.Look ?? "",
@@ -783,7 +784,7 @@ public class MainForm : Form
         public DateTime Seen;
     }
 
-    record AppInfo(string Id, string Name, string Ip, int Port);
+    record AppInfo(string Id, string Name, string Ip, int Port, long Version = 0);
 
     readonly Dictionary<string, AppPhone> appPhones = new();
     readonly HashSet<string> appMirroring = new();
@@ -837,7 +838,8 @@ public class MainForm : Form
                 foreach (var f in found)
                 {
                     var id = f.Txt.TryGetValue("id", out var i) ? i : f.Instance;
-                    changed |= SeenApp(new AppInfo(id, f.Instance, f.Address.ToString(), f.Port));
+                    long.TryParse(f.Txt.TryGetValue("version", out var v) ? v : "0", out var ver);
+                changed |= SeenApp(new AppInfo(id, f.Instance, f.Address.ToString(), f.Port, ver));
                 }
             }
 
@@ -899,6 +901,7 @@ public class MainForm : Form
         ph.Model = info.Name;
         ph.LastIp = info.Ip;
         ph.Port = info.Port;
+        if (info.Version > 0) ph.AppVersion = info.Version;
         ph.LastSeen = DateTime.Now;
         if (changed) cfg.Save();
         return changed;
@@ -957,7 +960,8 @@ public class MainForm : Form
             if (r.GetProperty("app").GetString() != "phonemirror") return null;
             return new AppInfo(r.GetProperty("id").GetString() ?? ip,
                 r.TryGetProperty("name", out var nm) ? nm.GetString() ?? "Android phone" : "Android phone",
-                ip, r.TryGetProperty("port", out var pt) ? pt.GetInt32() : port);
+                ip, r.TryGetProperty("port", out var pt) ? pt.GetInt32() : port,
+                r.TryGetProperty("version", out var vv) && vv.TryGetInt64(out var vl) ? vl : 0);
         }
         catch { return null; }
     }

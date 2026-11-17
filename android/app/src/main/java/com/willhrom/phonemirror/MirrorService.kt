@@ -102,6 +102,13 @@ class MirrorService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     @Volatile private var lastCut = 0L
     private val releaseLater = Runnable { stopSharing() }
+    /** Looks for app updates a minute after starting, then every 6 hours (installs only when not mirroring). */
+    private val updateCheck = object : Runnable {
+        override fun run() {
+            AppUpdater.check(this@MirrorService)
+            main.postDelayed(this, 6 * 60 * 60 * 1000L)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -124,6 +131,8 @@ class MirrorService : Service() {
         }
         startServer()
         registerNsd()
+        main.removeCallbacks(updateCheck)
+        main.postDelayed(updateCheck, 60_000)
         notifyChanged()
         return START_STICKY
     }
@@ -386,6 +395,7 @@ class MirrorService : Service() {
         .put("name", Prefs.deviceName(this))
         .put("port", port)
         .put("sharing", capturing)
+        .put("version", AppUpdater.installedVersion(this))
         .toString()
 
     private fun handleSocket(sock: Socket) {
@@ -463,6 +473,7 @@ class MirrorService : Service() {
         Thread({ writerLoop(c) }, "pm-writer").start()
         sendText(JSONObject().put("t", "ok").put("control", ControlService.instance != null)
             .put("name", Prefs.deviceName(this)).put("sharing", capturing)
+            .put("version", AppUpdater.installedVersion(this))
             .put("audio", settings.audio && AudioCapture.supported() &&
                 checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED))
         main.post {
@@ -499,6 +510,7 @@ class MirrorService : Service() {
             setPort(this@MirrorService.port)
             setAttribute("id", Prefs.deviceId(this@MirrorService))
             setAttribute("model", Build.MODEL)
+            setAttribute("version", AppUpdater.installedVersion(this@MirrorService).toString())
         }
         val l = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(s: NsdServiceInfo) {}
@@ -553,6 +565,7 @@ class MirrorService : Service() {
         try { nsdListener?.let { nsd?.unregisterService(it) } } catch (_: Exception) { }
         nsdListener = null
         getSystemService(NotificationManager::class.java).cancel(ID_REQUEST)
+        main.removeCallbacks(updateCheck)
         instance = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

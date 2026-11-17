@@ -18,7 +18,8 @@ class KnownPhone
     public bool NoH265 { get; set; }
     public bool NoHighProfile { get; set; }      // encoder rejects the H.264 High profile
     public bool IsApp { get; set; }              // connects through the Phone Mirror phone app (no debugging)
-    public int Port { get; set; }                // phone app's port             // phone can't encode H.265: use H.264 over Wi-Fi
+    public int Port { get; set; }                // phone app's port
+    public long AppVersion { get; set; }         // phone app's version (build number)             // phone can't encode H.265: use H.264 over Wi-Fi
 
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Model : Name;
 }
