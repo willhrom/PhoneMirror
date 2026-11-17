@@ -87,7 +87,7 @@ class MirrorService : Service() {
             val enc = encoder ?: return
             val target = settings.bitrate
             if (dropsSinceCheck == 0 && currentBitrate < target) {
-                currentBitrate = minOf(target, (currentBitrate * 1.1).toInt())
+                currentBitrate = minOf(target, (currentBitrate * 1.2).toInt())
                 enc.setBitrate(currentBitrate)
             }
             dropsSinceCheck = 0
@@ -325,18 +325,21 @@ class MirrorService : Service() {
     private fun enqueue(p: Packet) {
         if (p.flags == 0 && p.text == null && needKey) return
         if (p.flags == Packet.KEY) needKey = false
-        // Frames starting to pile up = Wi-Fi is behind. Send less right away (at most every 0.4 s).
-        if (p.text == null && p.flags != Packet.AUDIO && queue.size > 3) {
+        // Wi-Fi is behind when the oldest waiting packet has waited a while (not just because a few
+        // tiny audio packets are queued). Then send less, at most every 0.5 s.
+        val oldest = queue.peek()
+        val waitMs = if (oldest == null) 0L else (System.nanoTime() - oldest.queuedAt) / 1_000_000
+        if (p.text == null && p.flags != Packet.AUDIO && waitMs > 60) {
             val now = System.currentTimeMillis()
-            if (now - lastCut > 400) {
+            if (now - lastCut > 500) {
                 lastCut = now
                 dropsSinceCheck++
-                currentBitrate = maxOf(1_500_000, (currentBitrate * 0.75).toInt())
+                currentBitrate = maxOf(minBitrate(), (currentBitrate * 0.8).toInt())
                 encoder?.setBitrate(currentBitrate)
             }
         }
-        // Badly behind: throw away the backlog and restart from a fresh picture.
-        if (!queue.offer(p) || queue.size > 24) {
+        // Badly behind (over ~0.4 s): throw away the backlog and restart from a fresh picture.
+        if (!queue.offer(p) || waitMs > 400) {
             val keep = queue.filter { it.text != null || it.flags == Packet.CONFIG }
             queue.clear()
             queue.addAll(keep)
@@ -348,6 +351,9 @@ class MirrorService : Service() {
             encoder?.requestKeyFrame()
         }
     }
+
+    /** Lowest quality worth sending: below this, encoders start skipping frames. */
+    private fun minBitrate() = minOf(settings.bitrate, 3_000_000)
 
     private fun sendText(json: JSONObject) {
         queue.offer(Packet(0, 0, null, json.toString()))

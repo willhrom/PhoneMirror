@@ -978,7 +978,7 @@ public class MainForm : Form
     static int AppBitrate(int maxSize, int fps)
     {
         double pixels = maxSize * (maxSize * 0.46);
-        return (int)Math.Clamp(pixels * fps * 0.14, 2_500_000, 12_000_000);
+        return (int)Math.Clamp(pixels * fps * 0.2, 4_000_000, 14_000_000);
     }
 
     async Task StartAppMirror(KnownPhone ph)

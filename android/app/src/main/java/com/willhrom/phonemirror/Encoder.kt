@@ -9,6 +9,8 @@ import android.view.Surface
 
 /** One encoded piece of video (or a text message), queued for the laptop. */
 class Packet(val flags: Int, val pts: Long, val data: ByteArray?, val text: String? = null) {
+    /** When it was queued, to tell how far behind the Wi-Fi is. */
+    val queuedAt: Long = System.nanoTime()
     companion object {
         const val KEY = 1
         const val CONFIG = 2
