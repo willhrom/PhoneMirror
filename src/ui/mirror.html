@@ -19,6 +19,8 @@
   .err{color:#fca5a5;font-size:12.5px;min-height:18px;margin-top:8px}
   .toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);background:#161a23ee;border:1px solid #2d3344;border-radius:12px;padding:8px 14px;font-size:12.5px;max-width:85%;text-align:center;transition:opacity .3s}
   .toast.hidden{opacity:0;pointer-events:none}
+  .stats{position:absolute;left:8px;top:8px;background:#000a;color:#9ff0cf;font:12px/1.4 Consolas,monospace;padding:4px 8px;border-radius:6px;pointer-events:none}
+  .stats.hidden{display:none}
 </style>
 </head>
 <body>
@@ -35,6 +37,7 @@
 </div></div>
 
 <div class="toast hidden" id="toast"></div>
+<div class="stats hidden" id="stats"></div>
 
 <script>
 const P = JSON.parse(decodeURIComponent(location.hash.slice(1) || '{}'));
@@ -85,25 +88,17 @@ function setup(w, h){
   if (decoder) { try { decoder.close(); } catch (e) {} }
   decoder = new VideoDecoder({
     output: frame => {
-      if (pendingFrame) pendingFrame.close();
-      pendingFrame = frame;
-      if (!drawQueued) { drawQueued = true; requestAnimationFrame(draw); }
+      // Draw the moment it's decoded (the canvas is low-latency) instead of waiting for the next refresh.
+      ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+      frame.close();
+      stats.frames++;
+      if (!$('wait').classList.contains('hidden')) show(null);
     },
     error: () => { needKey = true; send({ t:'sync' }); setup(vw, vh); }
   });
   decoder.configure({ codec:'avc1.64002A', optimizeForLatency:true, hardwareAcceleration:'prefer-hardware' });
   needKey = true;
   tell({ type:'size', w, h });
-}
-
-function draw(){
-  drawQueued = false;
-  const f = pendingFrame;
-  if (!f) return;
-  pendingFrame = null;
-  ctx.drawImage(f, 0, 0, canvas.width, canvas.height);
-  f.close();
-  if (!$('wait').classList.contains('hidden')) show(null);
 }
 
 // ---------- audio: 48 kHz stereo PCM, played with a small (~60 ms) buffer ----------
@@ -129,6 +124,7 @@ function onVideo(buf){
   const flags0 = new DataView(buf).getUint8(0);
   if (flags0 & 4) { playPcm(buf.slice(9)); return; }
   if (!decoder || decoder.state !== 'configured') return;
+  stats.bytes += buf.byteLength;
   const dv = new DataView(buf);
   const flags = dv.getUint8(0);
   const pts = Number(dv.getBigUint64(1));
@@ -136,7 +132,7 @@ function onVideo(buf){
   if (flags & 2) { cfg = data.slice(); return; }
   const key = (flags & 1) !== 0;
   if (needKey && !key) return;
-  if (!key && decoder.decodeQueueSize > 3) { needKey = true; send({ t:'sync' }); return; }   // falling behind: skip ahead
+  if (!key && decoder.decodeQueueSize > 8) { needKey = true; send({ t:'sync' }); return; }   // badly behind: skip ahead
   let payload = data;
   if (key && cfg) { payload = new Uint8Array(cfg.length + data.length); payload.set(cfg, 0); payload.set(data, cfg.length); }
   needKey = false;
@@ -194,10 +190,11 @@ canvas.addEventListener('wheel', e => {
     wheelTimer = null;
     if (Math.abs(wheelDy) >= 1) send(Object.assign({ t:'scroll', dy: wheelDy }, wheelPos));
     wheelDy = 0;
-  }, 70);
+  }, 40);
 }, { passive:false });
 
 canvas.addEventListener('keydown', e => {
+  if (e.key === 'F2') { $('stats').classList.toggle('hidden'); e.preventDefault(); return; }
   if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
     e.preventDefault();
     navigator.clipboard.readText().then(t => t && send({ t:'text', s:t })).catch(() => {});
@@ -219,6 +216,15 @@ $('codeGo').onclick = () => {
   waiting('Connecting…', '');
 };
 $('code').addEventListener('keydown', e => { if (e.key === 'Enter') $('codeGo').click(); });
+
+// ---------- stats (F2) ----------
+const stats = { frames: 0, bytes: 0 };
+setInterval(() => {
+  const el = $('stats');
+  if (!el.classList.contains('hidden'))
+    el.textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbps · ${vw}×${vh} · queue ${decoder ? decoder.decodeQueueSize : 0}`;
+  stats.frames = 0; stats.bytes = 0;
+}, 1000);
 
 // ---------- called by the app ----------
 window.pm = {

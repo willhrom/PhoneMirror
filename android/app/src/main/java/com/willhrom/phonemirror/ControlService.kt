@@ -87,6 +87,7 @@ class ControlService : AccessibilityService() {
     private var busy = false
     private var pending: PointF? = null
     private var pendingUp = false
+    private var lastSent = 0L
 
     private fun down(p: PointF) {
         stroke = null
@@ -97,6 +98,7 @@ class ControlService : AccessibilityService() {
         val s = GestureDescription.StrokeDescription(path, 0, 1, true)
         stroke = s
         last = p
+        lastSent = android.os.SystemClock.uptimeMillis()
         dispatch(s)
     }
 
@@ -123,7 +125,11 @@ class ControlService : AccessibilityService() {
             lineTo(endX, to.y)
         }
         val keepGoing = !pendingUp
-        val next = s.continueStroke(path, 0, 16, keepGoing)
+        // Play each piece over the real time it took on the laptop, so flings keep their speed.
+        val now = android.os.SystemClock.uptimeMillis()
+        val duration = (now - lastSent).coerceIn(8L, 40L)
+        lastSent = now
+        val next = s.continueStroke(path, 0, duration, keepGoing)
         pending = null
         last = PointF(endX, to.y)
         if (keepGoing) stroke = next else { stroke = null; pendingUp = false }
@@ -163,7 +169,7 @@ class ControlService : AccessibilityService() {
             lineTo(p.x, endY)
         }
         dispatchGesture(GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 220)).build(), null, null)
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 140)).build(), null, null)
     }
 
     // ---------------- keys and typing ----------------

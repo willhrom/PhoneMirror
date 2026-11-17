@@ -14,6 +14,7 @@ import android.hardware.display.VirtualDisplay
 import android.media.AudioManager
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
@@ -86,11 +87,11 @@ class MirrorService : Service() {
             val enc = encoder ?: return
             val target = settings.bitrate
             if (dropsSinceCheck == 0 && currentBitrate < target) {
-                currentBitrate = minOf(target, (currentBitrate * 1.15).toInt())
+                currentBitrate = minOf(target, (currentBitrate * 1.1).toInt())
                 enc.setBitrate(currentBitrate)
             }
             dropsSinceCheck = 0
-            main.postDelayed(this, 3000)
+            main.postDelayed(this, 2000)
         }
     }
     @Volatile private var settings = Settings()
@@ -98,6 +99,8 @@ class MirrorService : Service() {
     private var size = Pair(0, 0)
     private val queue = LinkedBlockingQueue<Packet>(96)
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    @Volatile private var lastCut = 0L
     private val releaseLater = Runnable { stopSharing() }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -277,7 +280,7 @@ class MirrorService : Service() {
         }
         acquireWake()
         main.removeCallbacks(adapt)
-        main.postDelayed(adapt, 3000)
+        main.postDelayed(adapt, 2000)
         if (settings.audio && audio == null && AudioCapture.supported() &&
             checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             val a = AudioCapture(proj) { enqueue(it) }
@@ -313,7 +316,18 @@ class MirrorService : Service() {
     private fun enqueue(p: Packet) {
         if (p.flags == 0 && p.text == null && needKey) return
         if (p.flags == Packet.KEY) needKey = false
-        if (!queue.offer(p) || queue.size > 12) {
+        // Frames starting to pile up = Wi-Fi is behind. Send less right away (at most every 0.4 s).
+        if (p.text == null && p.flags != Packet.AUDIO && queue.size > 3) {
+            val now = System.currentTimeMillis()
+            if (now - lastCut > 400) {
+                lastCut = now
+                dropsSinceCheck++
+                currentBitrate = maxOf(1_500_000, (currentBitrate * 0.75).toInt())
+                encoder?.setBitrate(currentBitrate)
+            }
+        }
+        // Badly behind: throw away the backlog and restart from a fresh picture.
+        if (!queue.offer(p) || queue.size > 24) {
             val keep = queue.filter { it.text != null || it.flags == Packet.CONFIG }
             queue.clear()
             queue.addAll(keep)
@@ -376,6 +390,7 @@ class MirrorService : Service() {
 
     private fun handleSocket(sock: Socket) {
         sock.tcpNoDelay = true
+        try { sock.sendBufferSize = 96 * 1024 } catch (_: Exception) { }
         val c = WsConnection(sock)
         try {
             if (!c.handshake { info() }) { c.close(); return }
@@ -492,6 +507,15 @@ class MirrorService : Service() {
     // ---------------- power ----------------
 
     private fun acquireWake() {
+        // Keep Wi-Fi out of power-saving while mirroring (power saving batches packets = lag).
+        if (wifiLock?.isHeld != true) {
+            try {
+                val wm = applicationContext.getSystemService(WifiManager::class.java)
+                @Suppress("DEPRECATION")
+                val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                wifiLock = wm.createWifiLock(mode, "phonemirror:stream").apply { setReferenceCounted(false); acquire() }
+            } catch (_: Exception) { }
+        }
         if (wakeLock?.isHeld == true) return
         @Suppress("DEPRECATION")
         wakeLock = getSystemService(PowerManager::class.java)
@@ -500,6 +524,8 @@ class MirrorService : Service() {
     }
 
     private fun releaseWake() {
+        try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (_: Exception) { }
+        wifiLock = null
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) { }
         wakeLock = null
     }

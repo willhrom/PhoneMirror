@@ -949,11 +949,11 @@ public class MainForm : Form
         if (WebEnv == null || !appPhones.TryGetValue(ph.Id, out var a)) return;
         LocalWeb.Start();
 
-        int hz = DisplayHz();
-        int fps = cfg.FrameRate > 0 ? cfg.FrameRate : Math.Clamp(hz, 60, 120);
+        // Wi-Fi defaults tuned for low lag: 1280 at 60 fps; the phone raises quality when the link allows.
+        int fps = cfg.FrameRate > 0 ? cfg.FrameRate : 60;
         int q = ph.Quality ?? cfg.MaxSize;
-        int maxSize = q < 0 ? 1600 : q == 0 ? 2400 : q;
-        int bitrate = (fps > 60 ? 16 : 12) * 1_000_000;
+        int maxSize = q < 0 ? 1280 : q == 0 ? 2400 : q;
+        int bitrate = (fps > 60 ? 12 : 8) * 1_000_000;
         // The phone remembers these, so later it can link straight to this laptop without shared Wi-Fi.
         object? direct = cfg.AllowDirect ? new { ssid = DirectSsid, pass = DirectPass() } : null;
         var p = new { url = $"ws://{a.Ip}:{a.Port}/", pcId = cfg.PcId, pcName = Environment.MachineName, name = ph.DisplayName, maxSize, bitrate, fps, audio = cfg.Audio, direct };

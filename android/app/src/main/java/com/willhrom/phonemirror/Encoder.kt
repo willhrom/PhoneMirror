@@ -51,9 +51,11 @@ class Encoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10)   // full pictures only every 10 s (or on request)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 30)   // big full pictures cause hitches: rarely, or on request
             // Keep sending frames when the screen is still, so the picture never goes stale.
             setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000L)
+            // No B-frames: the encoder must not hold frames back to reorder them (that adds lag).
+            if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
             if (tuned) {
                 setInteger(MediaFormat.KEY_PRIORITY, 0) // real-time
                 setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
