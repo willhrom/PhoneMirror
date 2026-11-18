@@ -42,7 +42,8 @@ class Encoder(
         val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         // Best first; some encoders reject parts of the tuning, so step down until one is accepted.
         var ok = false
-        for ((tuned, refresh) in listOf(true to true, true to false, false to false)) {
+        // (Gradual refresh is off: on some phones it made the encoder overshoot its bit rate and lag.)
+        for ((tuned, refresh) in listOf(true to false, false to false)) {
             try {
                 c.configure(format(tuned, refresh), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 ok = true; break

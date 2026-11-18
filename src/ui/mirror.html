@@ -129,7 +129,7 @@ function onText(m){
     case 'control': control = !!m.enabled; if (!control) toast('Control is off. Turn it on in the Phone Mirror app on your phone.', 6000); break;
     case 'error': toast(m.text, 8000); tell({ type:'error', text:m.text }); break;
     case 'log': log(m.text); break;
-    case 'pong': rtt = performance.now() - m.ts; phoneQueue = m.q || 0; break;
+    case 'pong': rtt = performance.now() - m.ts; phoneQueue = m.q || 0; phoneTarget = m.b || 0; break;
   }
 }
 
@@ -481,11 +481,13 @@ setInterval(() => { if (ws && ws.readyState === 1 && ws.bufferedAmount < 4096) w
 
 // ---------- stats (F2) ----------
 const stats = { frames: 0, bytes: 0 };
+let phoneTarget = 0;
 setInterval(() => {
   const el = $('stats');
   if (!el.classList.contains('hidden'))
     el.textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbps · ${vw}×${vh}\n` +
-      `network ${Math.round(rtt)} ms round trip · extra delay ${Math.round(owdNow)} ms · decode ${Math.round(decAvg)} ms (${hwMode === 'prefer-hardware' ? 'hw' : 'sw'})`;
+      `network ${Math.round(rtt)} ms round trip · extra delay ${Math.round(owdNow)} ms · decode ${Math.round(decAvg)} ms (${hwMode === 'prefer-hardware' ? 'hw' : 'sw'})\n` +
+      `waiting on phone ${Math.round(phoneQueue)} ms · phone aiming for ${(phoneTarget / 1e6).toFixed(1)} Mbps`;
   send({ t:'ping', ts: performance.now() });
   stats.frames = 0; stats.bytes = 0;
 }, 1000);

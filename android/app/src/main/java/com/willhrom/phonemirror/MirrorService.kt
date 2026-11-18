@@ -561,7 +561,7 @@ class MirrorService : Service() {
                         val oldest = queue.peek()
                         val qwait = if (oldest == null) 0L else (System.nanoTime() - oldest.queuedAt) / 1_000_000
                         // Handed to the writer: the reader must never wait on Wi-Fi, or your taps and scrolls pile up behind it.
-                        replies.offer(JSONObject().put("t", "pong").put("ts", m.optDouble("ts")).put("q", qwait).toString())
+                        replies.offer(JSONObject().put("t", "pong").put("ts", m.optDouble("ts")).put("q", qwait).put("b", currentBitrate).toString())
                     }
                     "k" -> { }   // keep-awake tick from the laptop (keeps Wi-Fi out of power saving)
                     "cc" -> if (approved) onDelay(m.optDouble("d", 0.0))
