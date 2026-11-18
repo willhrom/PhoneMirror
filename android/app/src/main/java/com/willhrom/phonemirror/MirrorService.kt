@@ -477,6 +477,9 @@ class MirrorService : Service() {
 
     private fun handleSocket(sock: Socket) {
         sock.tcpNoDelay = true
+        // The laptop sends something every 20 ms. 15 s of silence means the connection is dead
+        // (Wi-Fi dropped, laptop asleep): close it, so the laptop can reconnect instead of both sides waiting forever.
+        sock.soTimeout = 15_000
         // Small on purpose: a big buffer hides a backlog (that's how delay crept up to half a second).
         try { sock.sendBufferSize = 64 * 1024 } catch (_: Exception) { }
         val c = WsConnection(sock)

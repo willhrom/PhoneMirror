@@ -148,6 +148,9 @@ class ScreenHostForm : Form
                 case "error":
                     Log?.Invoke(m.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "Error");
                     break;
+                case "log":
+                    Log?.Invoke(m.TryGetProperty("text", out var lt) ? lt.GetString() ?? "" : "");
+                    break;
                 case "closed":
                     Close();
                     break;

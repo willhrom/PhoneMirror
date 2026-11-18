@@ -147,7 +147,9 @@ public class MainForm : Form
         {
             // Allow the player page (on 127.0.0.1) to reach phones on the local Wi-Fi.
             var options = new CoreWebView2EnvironmentOptions(
-                "--disable-features=BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults --autoplay-policy=no-user-gesture-required");
+                "--disable-features=BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults --autoplay-policy=no-user-gesture-required" +
+                // Keep the phone connection's timers running when the phone window is minimized or covered.
+                " --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows");
             var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Tools.AppDir, "WebView2"), options);
             WebEnv = env;
             await web.EnsureCoreWebView2Async(env);
