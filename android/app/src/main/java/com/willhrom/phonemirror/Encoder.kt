@@ -31,6 +31,13 @@ class Encoder(
     private var surface: Surface? = null
     @Volatile private var running = false
 
+    /** When the encoder last produced anything (SystemClock.elapsedRealtime). */
+    @Volatile var lastOutputAt = 0L
+        private set
+    /** The encoder failed on its own while it should have been running. */
+    @Volatile var died = false
+        private set
+
     fun start(): Surface {
         val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         try {
@@ -45,6 +52,7 @@ class Encoder(
         codec = c
         surface = s
         running = true
+        lastOutputAt = android.os.SystemClock.elapsedRealtime()
         Thread({ drain(c) }, "pm-encoder").start()
         return s
     }
@@ -88,6 +96,7 @@ class Encoder(
             while (running) {
                 val idx = c.dequeueOutputBuffer(info, 20_000)
                 if (idx < 0) continue
+                lastOutputAt = android.os.SystemClock.elapsedRealtime()
                 val buf = c.getOutputBuffer(idx)
                 if (buf != null && info.size > 0) {
                     val data = ByteArray(info.size)
@@ -105,7 +114,8 @@ class Encoder(
                 if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
             }
         } catch (_: Exception) {
-            // codec stopped underneath us: normal when stopping
+            // Normal when stopping; otherwise the encoder broke and needs a restart.
+            if (running) died = true
         }
     }
 

@@ -97,6 +97,7 @@ class MirrorService : Service() {
             main.postDelayed(this, 2000)
         }
     }
+    private val inputTypes = setOf("tap", "down", "up", "text", "del", "scroll")
     @Volatile private var settings = Settings()
     @Volatile private var needKey = true
     private var size = Pair(0, 0)
@@ -106,6 +107,40 @@ class MirrorService : Service() {
     private var wifiLock2: WifiManager.WifiLock? = null
     @Volatile private var lastCut = 0L
     private val releaseLater = Runnable { stopSharing() }
+
+    /** When the laptop last clicked, scrolled or typed (elapsedRealtime). */
+    @Volatile private var lastInputAt = 0L
+    private var lastRestart = 0L
+    private var nudged = false
+
+    /**
+     * Encoder watchdog. A still screen legitimately sends nothing, so a stall only counts when you
+     * interacted from the laptop and no new picture came back. First it asks for a fresh frame,
+     * then it rebuilds the encoder. The laptop's Activity log says what happened.
+     */
+    private val watchdog = object : Runnable {
+        override fun run() {
+            val enc = encoder ?: return
+            main.postDelayed(this, 1000)
+            val now = android.os.SystemClock.elapsedRealtime()
+            val reason = when {
+                enc.died -> "the phone's video encoder stopped."
+                !getSystemService(PowerManager::class.java).isInteractive -> null   // screen off: nothing to send
+                lastInputAt > enc.lastOutputAt && now - lastInputAt > 4000 && now - enc.lastOutputAt > 4000 ->
+                    "no new picture from the phone 4 s after input."
+                else -> { if (enc.lastOutputAt >= lastInputAt) nudged = false; null }
+            } ?: run {
+                if (!nudged && lastInputAt > enc.lastOutputAt && now - lastInputAt > 2000) { nudged = true; enc.requestKeyFrame() }
+                return
+            }
+            if (now - lastRestart < 15_000 && !enc.died) return
+            lastRestart = now
+            lastInputAt = 0
+            nudged = false
+            replies.offer(JSONObject().put("t", "log").put("text", "Phone: $reason Restarting its video.").toString())
+            startEncoding()
+        }
+    }
     /** Looks for app updates a minute after starting, then every 6 hours (installs only when not mirroring). */
     private val updateCheck = object : Runnable {
         override fun run() {
@@ -295,6 +330,8 @@ class MirrorService : Service() {
         acquireWake()
         main.removeCallbacks(adapt)
         main.postDelayed(adapt, 2000)
+        main.removeCallbacks(watchdog)
+        main.postDelayed(watchdog, 1000)
         if (settings.audio && audio == null && AudioCapture.supported() &&
             checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             val a = AudioCapture(proj) { enqueue(it) }
@@ -305,6 +342,7 @@ class MirrorService : Service() {
 
     private fun stopEncoding() {
         main.removeCallbacks(adapt)
+        main.removeCallbacks(watchdog)
         audio?.stop()
         audio = null
         val e = encoder
@@ -536,8 +574,9 @@ class MirrorService : Service() {
                             s.fps, s.audio)
                         main.post { if (encoder != null && Pair(captureSize(settings.maxSize).first, captureSize(settings.maxSize).second) != size) startEncoding() }
                     }
-                    "key" -> if (approved) key(m.optString("k"))
+                    "key" -> if (approved) { lastInputAt = android.os.SystemClock.elapsedRealtime(); key(m.optString("k")) }
                     else -> if (approved) {
+                        if (m.optString("t") in inputTypes) lastInputAt = android.os.SystemClock.elapsedRealtime()
                         val ctl = ControlService.instance
                         if (ctl != null) ctl.handle(m) else sendText(JSONObject().put("t", "control").put("enabled", false))
                     }

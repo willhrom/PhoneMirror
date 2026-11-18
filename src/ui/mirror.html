@@ -128,6 +128,7 @@ function onText(m){
     case 'config': setup(m.w, m.h); break;
     case 'control': control = !!m.enabled; if (!control) toast('Control is off. Turn it on in the Phone Mirror app on your phone.', 6000); break;
     case 'error': toast(m.text, 8000); tell({ type:'error', text:m.text }); break;
+    case 'log': log(m.text); break;
     case 'pong': rtt = performance.now() - m.ts; phoneQueue = m.q || 0; break;
   }
 }
