@@ -40,13 +40,15 @@ class Encoder(
 
     fun start(): Surface {
         val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        try {
-            c.configure(format(tuned = true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        } catch (e: Exception) {
-            // Some encoders reject the extra tuning; fall back to the basics.
-            c.reset()
-            c.configure(format(tuned = false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        // Best first; some encoders reject parts of the tuning, so step down until one is accepted.
+        var ok = false
+        for ((tuned, refresh) in listOf(true to true, true to false, false to false)) {
+            try {
+                c.configure(format(tuned, refresh), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                ok = true; break
+            } catch (_: Exception) { c.reset() }
         }
+        if (!ok) c.configure(format(false, false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         val s = c.createInputSurface()
         c.start()
         codec = c
@@ -57,7 +59,7 @@ class Encoder(
         return s
     }
 
-    private fun format(tuned: Boolean): MediaFormat =
+    private fun format(tuned: Boolean, refresh: Boolean): MediaFormat =
         MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
@@ -74,6 +76,9 @@ class Encoder(
                 setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel42)
                 if (Build.VERSION.SDK_INT >= 29) setFloat("max-fps-to-encoder", fps.toFloat())
                 if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LATENCY, 1)
+                // Refresh the picture a slice at a time over about a second, instead of sending a whole
+                // new picture at once (those big frames are a common cause of lag spikes).
+                if (refresh) setInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD, fps)
             }
         }
 

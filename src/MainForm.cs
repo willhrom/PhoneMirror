@@ -290,6 +290,9 @@ public class MainForm : Form
 
     void PushState()
     {
+        // Steady Wi-Fi only while something is being mirrored.
+        WifiTuning.Log ??= m => Ui(() => Log(m));
+        WifiTuning.Set(appMirroring.Count > 0 || mirroring.Count > 0);
         var v = Updater.Current;
         Post(new
         {

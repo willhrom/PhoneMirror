@@ -365,7 +365,7 @@ function pos(e){
 let down = false, lastMove = 0, moveTimer = null, lastPos = null;
 // Taps are decided here, where the timing is exact. Network delay can't stretch a click into a long press.
 // A press only becomes a finger on the phone once it's held (holdMs) or dragged (more than a few pixels).
-const holdMs = 350, dragPx = 8;
+const holdMs = 500, dragPx = 8;   // shorter clicks are always taps; only a deliberate hold becomes a long press
 let press = null, laptopTaps = false;   // { x, y, cx, cy, timer, sent }
 function startFinger(){
   if (!press || press.sent) return;
@@ -437,11 +437,12 @@ canvas.addEventListener('wheel', e => {
   wheel.y += dy;
   if (wheel.y < 0.03 || wheel.y > 0.97) {
     // reached the edge of the screen: lift and put the finger back for more scrolling
+    // (the next scroll puts a new finger down and moves it at once, so a resting finger can never
+    // turn into a tap or a long press that highlights things)
     wheel.y = Math.min(0.97, Math.max(0.03, wheel.y));
-    const x = wheel.x, sy = wheel.startY;
     wheelFinish();
-    wheel = { x, y: sy, startY: sy };
-    send({ t:'down', now:true, x, y: sy });
+    clearTimeout(wheelEnd);
+    return;
   }
   const now = performance.now();
   if (now - wheelSent >= 16) { wheelSent = now; send({ t:'move', x: wheel.x, y: wheel.y }); }
