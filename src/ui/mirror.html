@@ -444,7 +444,9 @@ function wheelTick(){
     wheel.live = true;
   }
   // move part of the remaining distance each frame (an ease-out glide)
-  const step = Math.abs(wheel.pending) < 0.003 ? wheel.pending : wheel.pending * 0.45;
+  // Touchpads are already smooth: follow them exactly, no added delay. Notched mouse wheels jump
+  // 100 px at a time: glide those over a couple of frames.
+  const step = (!wheel.notched || Math.abs(wheel.pending) < 0.003) ? wheel.pending : wheel.pending * 0.7;
   let ny = wheel.y + step;
   const lo = W_TOP, hi = W_BOTTOM;
   if (ny < lo || ny > hi) {
@@ -471,6 +473,7 @@ canvas.addEventListener('wheel', e => {
   // reversing direction: let go first so the new direction gets a fresh finger
   if (wheel.live && dy !== 0 && Math.sign(dy) !== Math.sign(wheel.pending || dy)) { wheelLift(); wheel.pending = 0; }
   wheel.pending += dy;
+  wheel.notched = e.deltaMode !== 0 || (Math.abs(e.deltaY) >= 50 && Number.isInteger(e.deltaY) && e.deltaY % 10 === 0);
   wheelIdle = performance.now();
   if (!wheelRaf) wheelRaf = requestAnimationFrame(wheelTick);
 }, { passive:false });

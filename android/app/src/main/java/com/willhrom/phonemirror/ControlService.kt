@@ -132,6 +132,10 @@ class ControlService : AccessibilityService() {
     }
 
     private var downTs = 0L
+    /** Android's pause between one piece finishing and the next starting (ms, smoothed). */
+    private var overhead = 8.0
+    private var pieceStart = 0L
+    private var pieceLength = 0L
 
     private fun startStroke(p: PointF) {
         gen++
@@ -195,13 +199,15 @@ class ControlService : AccessibilityService() {
         for ((pt, _) in pending) { path.lineTo(pt.x, pt.y); end = pt }
         if (end.x == last.x && end.y == last.y) { end = PointF(end.x + 0.5f, end.y); path.lineTo(end.x, end.y) }
         val ts = pending.lastOrNull()?.second ?: 0L
-        var duration = when {
-            ts > 0 && lastTs > 0 -> ts - lastTs                  // the laptop's real timing
-            else -> now - lastSent                               // older laptop app: arrival timing
-        }.coerceIn(8L, 60L)
-        // Behind (points have been waiting): play quicker so the finger catches up with you.
+        // How long this stretch of motion took on the laptop, minus Android's own pause between pieces,
+        // so playback keeps pace with you instead of slipping a little further behind on every piece.
+        val span = if (ts > 0 && lastTs > 0) ts - lastTs else now - lastSent
+        var duration = (span - overhead.toLong()).coerceIn(8L, 33L)
+        // Behind (points have been waiting a while): play at full speed until the finger catches up.
         val behind = if (pending.isEmpty()) 0L else now - firstPendingAt
-        if (behind > 40) duration = maxOf(8L, duration / 2)
+        if (behind > 50) duration = 8L
+        pieceStart = now
+        pieceLength = duration
         if (ts > 0) lastTs = ts
         lastSent = now
         val keepGoing = !pendingUp
@@ -219,6 +225,11 @@ class ControlService : AccessibilityService() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 if (g != gen) return          // an older finger: ignore, it must not touch the new one
                 busy = false
+                if (pieceStart > 0) {
+                    val extra = (android.os.SystemClock.uptimeMillis() - pieceStart - pieceLength).toDouble().coerceIn(0.0, 40.0)
+                    overhead = overhead * 0.8 + extra * 0.2
+                    pieceStart = 0
+                }
                 if (stroke == null) afterLift() else pump()
             }
 
