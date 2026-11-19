@@ -58,6 +58,8 @@ class MirrorService : Service() {
         @Volatile var running = false
         @Volatile var capturing = false
         @Volatile var clientName: String? = null
+        /** When a laptop was last connected (elapsedRealtime), so updates never land in the middle of use. */
+        @Volatile var lastClientAt = 0L
         @Volatile var waitingFor: String? = null
         @Volatile var listener: (() -> Unit)? = null
         /** Set by the visible activity: lets it start sharing right away when a laptop asks. */
@@ -640,6 +642,7 @@ class MirrorService : Service() {
         if (client !== c) return
         client = null
         clientName = null
+        lastClientAt = android.os.SystemClock.elapsedRealtime()
         main.post {
             if (client == null) {
                 stopEncoding()
@@ -719,6 +722,7 @@ class MirrorService : Service() {
         val c = client
         client = null
         clientName = null
+        lastClientAt = android.os.SystemClock.elapsedRealtime()
         c?.close()
         releaseCapture()
         try { server?.close() } catch (_: Exception) { }

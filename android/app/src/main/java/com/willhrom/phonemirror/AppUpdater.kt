@@ -96,8 +96,14 @@ object AppUpdater {
 
     private fun maybeAutoInstall(c: Context) {
         if (!updateAvailable(c)) return
-        // Never interrupt a mirroring session; try again later.
+        // Never interrupt mirroring, or a brief reconnect: wait until nothing has been connected for 10 minutes.
         if (MirrorService.clientName != null) return
+        if (MirrorService.lastClientAt != 0L &&
+            android.os.SystemClock.elapsedRealtime() - MirrorService.lastClientAt < 10 * 60 * 1000L) return
+        // One automatic try per version; if it fails or needs a tap, just leave a notification.
+        val p = prefs(c)
+        if (p.getLong("autoTried", 0) == latestVersion) { notifyAvailable(c); return }
+        p.edit().putLong("autoTried", latestVersion).apply()
         if (auto(c) && canInstall(c)) install(c) else notifyAvailable(c)
     }
 
@@ -119,10 +125,14 @@ object AppUpdater {
     const val ACTION_UPDATE = "com.willhrom.phonemirror.UPDATE"
 
     /** Downloads the new version and hands it to Android's installer. */
-    fun install(c: Context) {
+    /** Set when the person tapped Update: only then may Android's confirm screen pop up on its own. */
+    @Volatile var userAsked = false
+
+    fun install(c: Context, userAsked: Boolean = false) {
         val app = c.applicationContext
         if (busy || apkUrl.isEmpty()) return
         busy = true
+        this.userAsked = userAsked
         status = "Downloading version $latestName…"
         changed()
         Thread({
@@ -180,7 +190,10 @@ class InstallReceiver : BroadcastReceiver() {
                 else intent.getParcelableExtra(Intent.EXTRA_INTENT)
                 if (confirm != null) {
                     confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    try { context.startActivity(confirm) } catch (_: Exception) {
+                    try {
+                        if (!AppUpdater.userAsked) throw IllegalStateException("background update: notify instead")
+                        context.startActivity(confirm)
+                    } catch (_: Exception) {
                         val pi = PendingIntent.getActivity(context, 8, confirm, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
                         val nm = context.getSystemService(NotificationManager::class.java)
                         nm.createNotificationChannel(NotificationChannel("updates", "App updates", NotificationManager.IMPORTANCE_DEFAULT))

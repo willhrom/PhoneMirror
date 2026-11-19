@@ -89,15 +89,19 @@ class MainActivity : Activity() {
     }
 
     private fun handleIntent(i: Intent?) {
-        if (i?.action == MirrorService.ACTION_SHARE) requestCapture()
-        if (i?.action == AppUpdater.ACTION_UPDATE) startUpdate()
+        // Act on each request once: reopening from Recents replays the old one (that could loop installs).
+        if (i == null || i.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        val action = i.action
+        i.action = null
+        if (action == MirrorService.ACTION_SHARE) requestCapture()
+        if (action == AppUpdater.ACTION_UPDATE) startUpdate()
     }
 
     private fun startUpdate() {
         if (!AppUpdater.canInstall(this)) {
             AppUpdater.status = "Allow Phone Mirror to install updates, then come back"
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
-        } else if (AppUpdater.updateAvailable(this)) AppUpdater.install(this)
+        } else if (AppUpdater.updateAvailable(this)) AppUpdater.install(this, userAsked = true)
         else AppUpdater.check(this, force = true, installIfAuto = false)
         refresh()
     }
@@ -194,7 +198,8 @@ class MainActivity : Activity() {
         }
         MirrorService.listener = { runOnUiThread { refresh() } }
         AppUpdater.listener = { runOnUiThread { refresh() } }
-        AppUpdater.check(this)
+        // Only look: opening the app never starts an install (that caused a loop with Android's confirm screen).
+        AppUpdater.check(this, installIfAuto = false)
         MirrorService.onShareRequest = { runOnUiThread { requestCapture() } }
         refresh()
     }
