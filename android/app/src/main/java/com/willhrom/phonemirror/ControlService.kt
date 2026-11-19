@@ -58,8 +58,8 @@ class ControlService : AccessibilityService() {
                 when (m.optString("t")) {
                     // Newer laptops decide taps themselves: "tap" is a click, "down" with now=true is a real hold/drag.
                     "tap" -> { main.removeCallbacks(startHeld); downAt = null; tap(point(m)) }
-                    "down" -> if (m.optBoolean("now")) { main.removeCallbacks(startHeld); downAt = null; beginStroke(point(m)) } else down(point(m))
-                    "move" -> move(point(m))
+                    "down" -> if (m.optBoolean("now").also { downTs = m.optLong("ts", 0L) }) { main.removeCallbacks(startHeld); downAt = null; beginStroke(point(m)) } else down(point(m))
+                    "move" -> move(point(m), m.optLong("ts", 0L))
                     "up" -> up()
                     "scroll" -> scroll(point(m), m.optDouble("dy", 0.0).toFloat())
                     "key" -> key(m.optString("k"))
@@ -90,9 +90,12 @@ class ControlService : AccessibilityService() {
     private var stroke: GestureDescription.StrokeDescription? = null
     private var last = PointF()
     private var busy = false
-    private var pending: PointF? = null
+    /** Points the laptop's finger moved through, with the laptop's own time (ms) for each. */
+    private val pending = ArrayList<Pair<PointF, Long>>()
     private var pendingUp = false
     private var lastSent = 0L
+    private var lastTs = 0L            // laptop time of the last point already played
+    private var firstPendingAt = 0L    // when the oldest unplayed point arrived here
 
     private var downAt: PointF? = null
     private val startHeld = Runnable { downAt?.let { downAt = null; beginStroke(it) } }
@@ -118,7 +121,7 @@ class ControlService : AccessibilityService() {
     private var deferredStart: PointF? = null
 
     private fun beginStroke(p: PointF) {
-        pending = null
+        pending.clear()
         pendingUp = false
         if (busy && stroke == null) {
             // The last finger is still lifting: put this one down as soon as it's up (moves are kept meanwhile).
@@ -128,8 +131,12 @@ class ControlService : AccessibilityService() {
         startStroke(p)
     }
 
+    private var downTs = 0L
+
     private fun startStroke(p: PointF) {
         gen++
+        lastTs = downTs
+        downTs = 0
         stroke = null
         busy = false
         val path = Path().apply { moveTo(p.x, p.y) }
@@ -146,7 +153,7 @@ class ControlService : AccessibilityService() {
         pendingTap?.let { pendingTap = null; tap(it) }
     }
 
-    private fun move(p: PointF) {
+    private fun move(p: PointF, ts: Long = 0L) {
         val d = downAt
         if (d != null) {
             // Moved before the tap window ended: it's a drag/scroll, start the finger now.
@@ -155,7 +162,9 @@ class ControlService : AccessibilityService() {
             downAt = null
             beginStroke(d)
         }
-        pending = p
+        if (pending.isEmpty()) firstPendingAt = android.os.SystemClock.uptimeMillis()
+        pending.add(p to ts)
+        if (pending.size > 64) pending.removeAt(0)
         pump()
     }
 
@@ -171,27 +180,35 @@ class ControlService : AccessibilityService() {
         pump()
     }
 
-    /** Sends the next piece of the finger's path once the previous one has been played. */
+    /**
+     * Plays the next piece of the finger's path once the previous one has finished: every point the
+     * laptop's finger passed through, at the speed it really moved (laptop timestamps, so Wi-Fi
+     * unevenness doesn't turn into jerky scrolling). If it has fallen behind, it plays faster to catch up.
+     */
     private fun pump() {
         val s = stroke ?: return
         if (busy) return
-        val target = pending
-        if (target == null && !pendingUp) return
-        val to = target ?: last
-        val endX = if (to.x == last.x && to.y == last.y) (to.x + 0.5f) else to.x
-        val path = Path().apply {
-            moveTo(last.x, last.y)
-            lineTo(endX, to.y)
-        }
-        val keepGoing = !pendingUp
-        // Play each piece over the real time it took on the laptop, so flings keep their speed.
+        if (pending.isEmpty() && !pendingUp) return
         val now = android.os.SystemClock.uptimeMillis()
-        val duration = (now - lastSent).coerceIn(8L, 40L)
+        val path = Path().apply { moveTo(last.x, last.y) }
+        var end = last
+        for ((pt, _) in pending) { path.lineTo(pt.x, pt.y); end = pt }
+        if (end.x == last.x && end.y == last.y) { end = PointF(end.x + 0.5f, end.y); path.lineTo(end.x, end.y) }
+        val ts = pending.lastOrNull()?.second ?: 0L
+        var duration = when {
+            ts > 0 && lastTs > 0 -> ts - lastTs                  // the laptop's real timing
+            else -> now - lastSent                               // older laptop app: arrival timing
+        }.coerceIn(8L, 60L)
+        // Behind (points have been waiting): play quicker so the finger catches up with you.
+        val behind = if (pending.isEmpty()) 0L else now - firstPendingAt
+        if (behind > 40) duration = maxOf(8L, duration / 2)
+        if (ts > 0) lastTs = ts
         lastSent = now
+        val keepGoing = !pendingUp
         val next = s.continueStroke(path, 0, duration, keepGoing)
-        pending = null
-        last = PointF(endX, to.y)
-        if (keepGoing) stroke = next else { stroke = null; pendingUp = false }
+        pending.clear()
+        last = end
+        if (keepGoing) stroke = next else { stroke = null; pendingUp = false; lastTs = 0 }
         dispatch(next)
     }
 
@@ -209,7 +226,7 @@ class ControlService : AccessibilityService() {
                 if (g != gen) return
                 busy = false
                 stroke = null
-                pending = null
+                pending.clear()
                 pendingUp = false
                 afterLift()
             }
