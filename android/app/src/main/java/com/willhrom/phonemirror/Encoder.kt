@@ -71,6 +71,11 @@ class Encoder(
             // No B-frames: the encoder must not hold frames back to reorder them (that adds lag).
             if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
             if (tuned) {
+                // Say exactly which colour standard is used (HD BT.709, studio range), and the laptop decodes
+                // with the same one. When they disagreed, colours came out slightly washed or shifted.
+                setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+                setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+                setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
                 setInteger(MediaFormat.KEY_PRIORITY, 0) // real-time
                 // Baseline: frames never need reordering, so the laptop can show each one immediately.
                 setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)

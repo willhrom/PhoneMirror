@@ -1072,7 +1072,8 @@ public class MainForm : Form
     {
         int screenH = Screen.PrimaryScreen?.Bounds.Height ?? 1080;
         int w = windowLongSide > 0 ? windowLongSide : (int)(screenH * 0.8);
-        return Math.Clamp((int)(w * 1.1) / 16 * 16, 640, 1600);
+        // 1.4x the window: sharper text, a bit more data.
+        return Math.Clamp((int)(w * 1.4) / 16 * 16, 720, 1920);
     }
 
     /// <summary>Enough bits for sharp scrolling at this size, not more (the phone backs off further if Wi-Fi lags).</summary>

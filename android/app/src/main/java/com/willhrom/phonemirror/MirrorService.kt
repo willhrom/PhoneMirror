@@ -469,7 +469,7 @@ class MirrorService : Service() {
                 val now = System.nanoTime()
                 // The phone's own Wi-Fi naps when it has nothing to send, and then hears the laptop late
                 // (that was the ~200 ms on a quiet screen). Sending a tiny tick keeps it awake.
-                if (p == null && now - lastWrite > 30_000_000L) { c.sendText(KEEP_AWAKE); lastWrite = now }
+                if (p == null && now - lastWrite > 15_000_000L) { c.sendText(KEEP_AWAKE); lastWrite = now }
                 if (sentSince == 0L) sentSince = now
                 if (now - sentSince > 1_000_000_000L) {
                     recentRate = sentBytes * 8 * 1_000_000_000L / (now - sentSince)
@@ -528,7 +528,7 @@ class MirrorService : Service() {
         // (Wi-Fi dropped, laptop asleep): close it, so the laptop can reconnect instead of both sides waiting forever.
         sock.soTimeout = 15_000
         // Small on purpose: a big buffer hides a backlog (that's how delay crept up to half a second).
-        try { sock.sendBufferSize = 64 * 1024 } catch (_: Exception) { }
+        try { sock.sendBufferSize = 32 * 1024 } catch (_: Exception) { }
         val c = WsConnection(sock)
         try {
             if (!c.handshake { info() }) { c.close(); return }

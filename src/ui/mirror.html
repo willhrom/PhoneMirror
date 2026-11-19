@@ -45,6 +45,10 @@ const host = window.chrome && window.chrome.webview;
 const tell = m => { try { host && host.postMessage(m); } catch (e) {} };
 const $ = id => document.getElementById(id);
 const canvas = $('c'), ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+// Phone screens (Samsung especially) are more saturated than a laptop's: a light boost makes the mirror
+// look like the phone. F3 switches it off/on (remembered).
+let vivid = true;
+try { vivid = localStorage.getItem('pm-vivid') !== '0'; } catch (e) {}
 
 // Decoder delay tracking: if the PC's hardware decoder holds frames back, switch to software decoding.
 let hwMode = 'prefer-hardware', decSamples = [], decAvg = 0, switched = false, rtt = 0, phoneQueue = 0;
@@ -142,6 +146,7 @@ function setup(w, h){
       const t0 = sentAt.get(frame.timestamp);
       if (t0 !== undefined) { sentAt.delete(frame.timestamp); noteDecode(performance.now() - t0); }
       // Draw the moment it's decoded (the canvas is low-latency) instead of waiting for the next refresh.
+      ctx.filter = vivid ? 'saturate(1.12) contrast(1.03)' : 'none';
       ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
       frame.close();
       firstUndecoded = 0;
@@ -150,7 +155,8 @@ function setup(w, h){
     },
     error: () => { needKey = true; send({ t:'sync' }); setup(vw, vh); }
   });
-  decoder.configure({ codec:'avc1.42E02A', optimizeForLatency:true, hardwareAcceleration: hwMode });
+  decoder.configure({ codec:'avc1.42E02A', optimizeForLatency:true, hardwareAcceleration: hwMode,
+    colorSpace: { primaries:'bt709', transfer:'bt709', matrix:'bt709', fullRange:false } });
   sentAt.clear(); decSamples = [];
   needKey = true;
   tell({ type:'size', w, h });
@@ -452,6 +458,13 @@ canvas.addEventListener('wheel', e => {
 
 canvas.addEventListener('keydown', e => {
   if (e.key === 'F2') { $('stats').classList.toggle('hidden'); e.preventDefault(); return; }
+  if (e.key === 'F3') {
+    vivid = !vivid;
+    try { localStorage.setItem('pm-vivid', vivid ? '1' : '0'); } catch (err) {}
+    toast(vivid ? 'Vivid colors on' : 'Natural colors', 1500);
+    send({ t:'sync' });   // redraw now with the new colors
+    e.preventDefault(); return;
+  }
   if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
     e.preventDefault();
     navigator.clipboard.readText().then(t => t && send({ t:'text', s:t })).catch(() => {});
@@ -477,7 +490,7 @@ $('code').addEventListener('keydown', e => { if (e.key === 'Enter') $('codeGo').
 // ---------- keep the phone's Wi-Fi awake ----------
 // Phones nap their Wi-Fi between packets (power saving), which delays everything we send them.
 // A tiny tick every 20 ms keeps it awake while mirroring.
-setInterval(() => { if (ws && ws.readyState === 1 && ws.bufferedAmount < 4096) ws.send('{"t":"k"}'); }, 20);
+setInterval(() => { if (ws && ws.readyState === 1 && ws.bufferedAmount < 4096) ws.send('{"t":"k"}'); }, 10);
 
 // ---------- stats (F2) ----------
 const stats = { frames: 0, bytes: 0 };
