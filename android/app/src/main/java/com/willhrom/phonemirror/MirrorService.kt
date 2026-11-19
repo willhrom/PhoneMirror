@@ -450,6 +450,9 @@ class MirrorService : Service() {
         queue.offer(Packet(0, 0, null, json.toString()))
     }
 
+    @Volatile private var lastWrite = 0L
+    private val KEEP_AWAKE = "{\"t\":\"k\"}"
+
     /** Small replies (pongs) that go out ahead of any waiting video. */
     private val replies = java.util.concurrent.ConcurrentLinkedQueue<String>()
 
@@ -460,18 +463,21 @@ class MirrorService : Service() {
 
     private fun writerLoop(c: WsConnection) {
         val header = ByteBuffer.allocate(9)
-        replies.clear()
         while (client === c) {
             val p = try { queue.poll(10, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { break }
             try {
-                while (true) c.sendText(replies.poll() ?: break)
+                while (true) { c.sendText(replies.poll() ?: break); lastWrite = System.nanoTime() }
                 val now = System.nanoTime()
+                // The phone's own Wi-Fi naps when it has nothing to send, and then hears the laptop late
+                // (that was the ~200 ms on a quiet screen). Sending a tiny tick keeps it awake.
+                if (p == null && now - lastWrite > 30_000_000L) { c.sendText(KEEP_AWAKE); lastWrite = now }
                 if (sentSince == 0L) sentSince = now
                 if (now - sentSince > 1_000_000_000L) {
                     recentRate = sentBytes * 8 * 1_000_000_000L / (now - sentSince)
                     sentBytes = 0; sentSince = now
                 }
                 if (p == null) continue
+                lastWrite = now
                 if (p.data != null) sentBytes += p.data.size
                 if (p.text != null) c.sendText(p.text)
                 else if (p.data != null) {
@@ -480,12 +486,16 @@ class MirrorService : Service() {
                     header.putLong(p.pts)
                     c.send(2, p.data, header.array().copyOf())
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                if (client === c) lastEnd = "sending failed: $e"
                 c.close()
                 break
             }
         }
     }
+
+    /** Why the last connection ended, told to the laptop when it reconnects (shows in its Activity log). */
+    @Volatile private var lastEnd: String? = null
 
     // ---------------- network ----------------
 
@@ -527,7 +537,7 @@ class MirrorService : Service() {
             while (true) {
                 val text = c.readText() ?: break
                 val m = try { JSONObject(text) } catch (_: Exception) { continue }
-                when (m.optString("t")) {
+                try { when (m.optString("t")) {
                     "hello" -> {
                         val pcId = m.optString("pcId")
                         val pcName = m.optString("pcName").ifBlank { "your laptop" }
@@ -580,9 +590,14 @@ class MirrorService : Service() {
                         val ctl = ControlService.instance
                         if (ctl != null) ctl.handle(m) else sendText(JSONObject().put("t", "control").put("enabled", false))
                     }
+                } } catch (e: Exception) {
+                    // One message going wrong must not end the whole session: skip it and tell the laptop.
+                    replies.offer(JSONObject().put("t", "log").put("text", "Phone: couldn't handle \"${m.optString("t")}\": $e").toString())
                 }
             }
-        } catch (_: Exception) {
+            if (client === c && lastEnd == null) lastEnd = "the laptop closed it"
+        } catch (e: Exception) {
+            if (client === c && lastEnd == null) lastEnd = if (e is java.net.SocketTimeoutException) "nothing heard from the laptop for 15 s" else "reading failed: $e"
         } finally {
             detach(c)
             c.close()
@@ -606,7 +621,10 @@ class MirrorService : Service() {
         clientName = pcName
         if (old != null && old !== c) old.close()
         queue.clear()
+        replies.clear()
         Thread({ writerLoop(c) }, "pm-writer").start()
+        lastEnd?.let { replies.offer(JSONObject().put("t", "log").put("text", "Phone: the last connection ended: $it.").toString()) }
+        lastEnd = null
         sendText(JSONObject().put("t", "ok").put("taps", true).put("control", ControlService.instance != null)
             .put("name", Prefs.deviceName(this)).put("sharing", capturing)
             .put("version", AppUpdater.installedVersion(this))
