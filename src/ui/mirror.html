@@ -133,6 +133,10 @@ function onText(m){
     case 'control': control = !!m.enabled; if (!control) toast('Control is off. Turn it on in the Phone Mirror app on your phone.', 6000); break;
     case 'error': toast(m.text, 8000); tell({ type:'error', text:m.text }); break;
     case 'log': log(m.text); break;
+    case 'shareStopped':
+      // Sharing was turned off on the phone: it no longer accepts control from here.
+      waiting('Screen sharing stopped on the phone', 'Control is paused too. Tap “Share screen” in Phone Mirror on your phone to continue.');
+      break;
     case 'pong': rtt = performance.now() - m.ts; phoneQueue = m.q || 0; phoneTarget = m.b || 0; break;
   }
 }

@@ -99,6 +99,7 @@ class MirrorService : Service() {
             main.postDelayed(this, 2000)
         }
     }
+    @Volatile private var lastPausedNote = 0L
     private val inputTypes = setOf("tap", "down", "up", "text", "del", "scroll")
     @Volatile private var settings = Settings()
     @Volatile private var needKey = true
@@ -268,6 +269,7 @@ class MirrorService : Service() {
 
     /** Turns screen sharing off but keeps waiting for the laptop (if background is on). */
     private fun stopSharing(keepService: Boolean = Prefs.background(this)) {
+        if (client != null) replies.offer(JSONObject().put("t", "shareStopped").toString())
         releaseCapture()
         if (!keepService) { quit(); return }
         if (running) goForeground(capture = false)
@@ -583,8 +585,16 @@ class MirrorService : Service() {
                             s.fps, s.audio)
                         main.post { if (encoder != null && Pair(captureSize(settings.maxSize).first, captureSize(settings.maxSize).second) != size) startEncoding() }
                     }
-                    "key" -> if (approved) { lastInputAt = android.os.SystemClock.elapsedRealtime(); key(m.optString("k")) }
-                    else -> if (approved) {
+                    // Control only while the screen is being shared: if you stop sharing on the phone,
+                    // the laptop can no longer touch it.
+                    "key" -> if (approved && capturing) { lastInputAt = android.os.SystemClock.elapsedRealtime(); key(m.optString("k")) }
+                    else -> if (approved && !capturing) {
+                        val now2 = android.os.SystemClock.elapsedRealtime()
+                        if (now2 - lastPausedNote > 3000) {
+                            lastPausedNote = now2
+                            replies.offer(JSONObject().put("t", "shareStopped").toString())
+                        }
+                    } else if (approved) {
                         if (m.optString("t") in inputTypes) lastInputAt = android.os.SystemClock.elapsedRealtime()
                         val ctl = ControlService.instance
                         if (ctl != null) ctl.handle(m) else sendText(JSONObject().put("t", "control").put("enabled", false))
