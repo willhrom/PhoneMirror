@@ -128,13 +128,10 @@ class MirrorService : Service() {
             val reason = when {
                 enc.died -> "the phone's video encoder stopped."
                 !getSystemService(PowerManager::class.java).isInteractive -> null   // screen off: nothing to send
-                lastInputAt > enc.lastOutputAt && now - lastInputAt > 4000 && now - enc.lastOutputAt > 4000 ->
-                    "no new picture from the phone 4 s after input."
+                // (No longer restarts on "input but no new picture": a click that doesn't change the screen
+                // looked the same, and the needless restarts caused lag spikes.)
                 else -> { if (enc.lastOutputAt >= lastInputAt) nudged = false; null }
-            } ?: run {
-                if (!nudged && lastInputAt > enc.lastOutputAt && now - lastInputAt > 2000) { nudged = true; enc.requestKeyFrame() }
-                return
-            }
+            } ?: return
             if (now - lastRestart < 15_000 && !enc.died) return
             lastRestart = now
             lastInputAt = 0

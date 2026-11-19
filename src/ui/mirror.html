@@ -95,13 +95,7 @@ function waiting(title, text){ $('waitTitle').textContent = title; $('waitText')
 let toastTimer;
 function toast(t, ms){ const el = $('toast'); el.textContent = t; el.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add('hidden'), ms || 4000); }
 
-const fingerMsgs = { down:1, move:1, up:1 };
-function send(o){
-  if (!ws || ws.readyState !== 1) return;
-  // Finger messages carry the laptop's time, so the phone replays your motion at its real speed.
-  if (fingerMsgs[o.t]) o.ts = Math.round(performance.now());
-  ws.send(JSON.stringify(o));
-}
+function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
 function connect(code){
   waiting('Connecting…', P.name ? 'to ' + P.name : '');
@@ -398,8 +392,8 @@ canvas.addEventListener('pointermove', e => {
     startFinger();
   }
   const now = performance.now();
-  if (now - lastMove >= 8) { lastMove = now; send(Object.assign({ t:'move' }, lastPos)); }
-  else if (!moveTimer) moveTimer = setTimeout(() => { moveTimer = null; if (down && lastPos) { lastMove = performance.now(); send(Object.assign({ t:'move' }, lastPos)); } }, 8);
+  if (now - lastMove >= 16) { lastMove = now; send(Object.assign({ t:'move' }, lastPos)); }
+  else if (!moveTimer) moveTimer = setTimeout(() => { moveTimer = null; if (down && lastPos) { lastMove = performance.now(); send(Object.assign({ t:'move' }, lastPos)); } }, 16);
 });
 const release = e => {
   if (!down) return;
@@ -415,67 +409,45 @@ canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('auxclick', e => e.preventDefault());
 
-// Mouse wheel / two-finger touchpad scrolling = one continuous finger drag on the phone.
-// The finger glides toward where the scroll should be on every screen refresh, so notched wheels and
-// uneven touchpad input both come out as smooth motion. Near the screen edge the finger lifts and a
-// fresh one is put down (and moved at once, so it's never a tap or a long press).
-const W_TOP = 0.12, W_BOTTOM = 0.88;
-let wheel = null, wheelIdle = 0, wheelRaf = 0;
-function wheelStart(x, dir){
-  // start on the side the finger moves away from, for the longest run before the edge
-  const y = dir < 0 ? W_BOTTOM - 0.04 : W_TOP + 0.04;
-  wheel = { x, y, target: y, pending: 0, live: false, dir };
-}
-function wheelLift(){
-  if (!wheel || !wheel.live) return;
+// Mouse wheel / two-finger touchpad scrolling = one continuous finger drag on the phone
+// (separate quick swipes looked like long presses and selected text).
+let wheel = null, wheelEnd = null, wheelSent = 0;
+function wheelFinish(){
+  if (!wheel) return;
   send({ t:'move', x: wheel.x, y: wheel.y });
   send({ t:'up' });
-  wheel.live = false;
-}
-function wheelTick(){
-  wheelRaf = 0;
-  if (!wheel) return;
-  if (!wheel.live) {
-    if (Math.abs(wheel.pending) < 0.002) { if (performance.now() - wheelIdle > 150) wheel = null; else wheelRaf = requestAnimationFrame(wheelTick); return; }
-    const carry = wheel.pending;
-    wheelStart(wheel.x, carry < 0 ? -1 : 1);
-    wheel.pending = carry;
-    send({ t:'down', now:true, x: wheel.x, y: wheel.y });
-    wheel.live = true;
-  }
-  // move part of the remaining distance each frame (an ease-out glide)
-  // Touchpads are already smooth: follow them exactly, no added delay. Notched mouse wheels jump
-  // 100 px at a time: glide those over a couple of frames.
-  const step = (!wheel.notched || Math.abs(wheel.pending) < 0.003) ? wheel.pending : wheel.pending * 0.7;
-  let ny = wheel.y + step;
-  const lo = W_TOP, hi = W_BOTTOM;
-  if (ny < lo || ny > hi) {
-    const clamped = Math.min(hi, Math.max(lo, ny));
-    wheel.pending -= clamped - wheel.y;
-    wheel.y = clamped;
-    wheelLift();                       // edge reached: lift; the next frame puts a new finger down
-  } else {
-    wheel.pending -= step;
-    wheel.y = ny;
-    send({ t:'move', x: wheel.x, y: wheel.y });
-    if (Math.abs(wheel.pending) < 0.0005 && performance.now() - wheelIdle > 150) { wheel.pending = 0; wheelLift(); wheel = null; return; }
-  }
-  wheelRaf = requestAnimationFrame(wheelTick);
+  wheel = null;
 }
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   if (down || e.ctrlKey) return;      // ctrl+wheel = touchpad pinch, not a scroll
   const r = canvas.getBoundingClientRect();
   const h = vw && vh ? Math.min(r.width / vw, r.height / vh) * vh : r.height;
-  let dy = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * h : e.deltaY;
-  dy = -dy / h;                       // the finger moves as far as the content should
-  if (!wheel) { wheel = { x: pos(e).x, y: 0, target: 0, pending: 0, live: false, dir: 0 }; }
-  // reversing direction: let go first so the new direction gets a fresh finger
-  if (wheel.live && dy !== 0 && Math.sign(dy) !== Math.sign(wheel.pending || dy)) { wheelLift(); wheel.pending = 0; }
-  wheel.pending += dy;
-  wheel.notched = e.deltaMode !== 0 || (Math.abs(e.deltaY) >= 50 && Number.isInteger(e.deltaY) && e.deltaY % 10 === 0);
-  wheelIdle = performance.now();
-  if (!wheelRaf) wheelRaf = requestAnimationFrame(wheelTick);
+  let dy = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY;
+  dy = -dy / h;                       // move the "finger" as far as the content should move
+  if (!wheel) {
+    const p = pos(e);
+    // start where there's room to move in the scroll direction
+    const startY = dy < 0 ? Math.max(p.y, 0.55) : Math.min(p.y, 0.45);
+    wheel = { x: p.x, y: startY, startY };
+    send({ t:'down', now:true, x: wheel.x, y: wheel.y });
+    send({ t:'move', x: wheel.x, y: wheel.y + (dy < 0 ? -0.02 : 0.02) });  // moves at once: never a long press
+    wheel.y += dy < 0 ? -0.02 : 0.02;
+  }
+  wheel.y += dy;
+  if (wheel.y < 0.03 || wheel.y > 0.97) {
+    // reached the edge of the screen: lift and put the finger back for more scrolling
+    // (the next scroll puts a new finger down and moves it at once, so a resting finger can never
+    // turn into a tap or a long press that highlights things)
+    wheel.y = Math.min(0.97, Math.max(0.03, wheel.y));
+    wheelFinish();
+    clearTimeout(wheelEnd);
+    return;
+  }
+  const now = performance.now();
+  if (now - wheelSent >= 16) { wheelSent = now; send({ t:'move', x: wheel.x, y: wheel.y }); }
+  clearTimeout(wheelEnd);
+  wheelEnd = setTimeout(wheelFinish, 120);
 }, { passive:false });
 
 canvas.addEventListener('keydown', e => {

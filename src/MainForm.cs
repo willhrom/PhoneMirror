@@ -292,7 +292,8 @@ public class MainForm : Form
     {
         // Steady Wi-Fi only while something is being mirrored.
         WifiTuning.Log ??= m => Ui(() => Log(m));
-        WifiTuning.Set(appMirroring.Count > 0 || mirroring.Count > 0);
+        // Wi-Fi tuning is off: lag and dropped connections got worse when it shipped (1.0.31).
+        WifiTuning.Set(false);
         var v = Updater.Current;
         Post(new
         {
